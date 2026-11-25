@@ -13,13 +13,14 @@ export default class Worktrees extends View {
     this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "New worktree: branch name (new or existing)…" });
     this.input.on("submit", (_e, cx) => this.create(cx));
-    this.handle.focus();
+    this.input.focus();
     if (checking()) return;
+    cx.timer.after(150, () => this.input.focus());
     this.load(cx);
   }
 
   git(args, cwd) { const p = project(); return exec("git", args, { cwd: cwd ?? p.path, on: p.on, timeout: 120000 }); }
-  close() { closeOverlay(props().overlay); }
+  dismiss() { closeOverlay(props().overlay); }
 
   load(cx) {
     if (!project()) { this.status = "No project folder"; return; }
@@ -56,19 +57,21 @@ export default class Worktrees extends View {
   pick(w) {
     if (w.prunable) return;
     setRoot(activeSpace().id, w.path, project().on);
-    this.close();
+    this.dismiss();
   }
 
   create(cx) {
     const branch = this.input.value().trim();
     if (!branch || this.busy) return;
     const dirSetting = settings()?.worktrees?.directory ?? "~/.herdr/worktrees";
-    const baseDir = dirSetting.replace(/^~(?=\/|$)/, home());
-    const path = `${baseDir}/${this.repo}/${branch.replace(/\//g, "-")}`;
     this.busy = true; this.error = null;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
+        const p = project();
+        const remoteHome = p.on ? (await exec("sh", ["-c", 'printf %s "$HOME"'], { on: p.on })).stdout.trim() : null;
+        const baseDir = dirSetting.replace(/^~(?=\/|$)/, remoteHome ?? home());
+        const path = `${baseDir}/${this.repo}/${branch.replace(/\//g, "-")}`;
         const exists = await this.git(["rev-parse", "--verify", "-q", `refs/heads/${branch}`]);
         const remote = exists.code === 0 ? null : await this.git(["rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`]);
         const args = exists.code === 0 ? ["worktree", "add", path, branch]
@@ -78,7 +81,7 @@ export default class Worktrees extends View {
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
         setRoot(activeSpace().id, path, project().on);
         notify({ title: `Worktree ${branch} ready`, body: path, level: "success", timeout: 3000 });
-        this.close();
+        this.dismiss();
       } catch (e) { this.busy = false; this.error = String(e.message ?? e); cx.notify(); }
     });
   }
@@ -97,7 +100,7 @@ export default class Worktrees extends View {
 
   terminal(w) {
     run("tab.new", { space: activeSpace().id, folder: w.path, name: w.branch ?? w.path.split("/").pop() });
-    this.close();
+    this.dismiss();
   }
 
   small(id, text, tip, action, t, danger = false) {
@@ -108,17 +111,17 @@ export default class Worktrees extends View {
   render() {
     const t = theme();
     return v_flex().id("ide-worktrees").track_focus(this.handle).size_full().min_h(0).p(8).gap(6).bg(t.popover).text_color(t.foreground).text_size(12.8)
-      .on_key_down((e, cx) => { if (e.key === "escape") { this.close(); cx.stop_propagation(); } })
+      .on_key_down((e, cx) => { if (e.key === "escape") { this.dismiss(); cx.stop_propagation(); } })
       .child(h_flex().px(6).h(24).items_center().gap(6)
         .child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child(`WORKTREES${this.repo ? ` · ${this.repo}` : ""}`))
         .child(div().text_size(10.5).text_color(t.dim).child("switching keeps this space"))
-        .child(div().id("wt-close").size(22).flex_none().flex().items_center().justify_center().rounded(5).cursor_pointer().text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Close (Esc)").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => this.close()).child(svg("mods/pane/close.svg").size(11))))
-      .child(v_flex().id("wt-list").flex_1().min_h(0).overflow_y_scrollbar()
+        .child(div().id("wt-close").size(22).flex_none().flex().items_center().justify_center().rounded(5).cursor_pointer().text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Close (Esc)").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => this.dismiss()).child(svg("mods/pane/close.svg").size(11))))
+      .child(v_flex().id("wt-list").h(320).flex_none().overflow_y_scrollbar()
         .children(this.list.map((w) => {
           const current = w.path === this.top;
           return h_flex().id(`wt-${w.path}`).h(44).flex_none().px(10).gap(8).items_center().rounded(6).cursor_pointer()
             .when(current, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click(() => this.pick(w))
-            .child(svg("mods/workspace-chrome/git-branch.svg").size(14).flex_none().text_color(current ? t.accent : t.muted))
+            .child(svg("mods/ide-explorer/icons/worktree.svg").size(14).flex_none().text_color(current ? t.accent : t.muted))
             .child(v_flex().flex_1().min_w(0)
               .child(h_flex().gap(6).min_w(0)
                 .child(div().min_w(0).truncate().font_medium().child(w.branch ?? (w.detached ? `detached @ ${w.head}` : w.head)))

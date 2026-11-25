@@ -3,7 +3,7 @@
 // Drag a file onto a terminal (Claude) to paste its path.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { exec, watchFolder, theme, shared, setShared, openOverlay, pickFolder, checking, run } from "herdr";
+import { exec, watchFolder, theme, shared, setShared, openOverlay, pickFolder, checking, run, notify } from "herdr";
 import { ACTIVE, activeSpace, project, ensureProject, setRoot, openInEditor, fileTint, relTo } from "./common.js";
 
 const PER_FOLDER = 1000, TOTAL = 8000;
@@ -34,6 +34,11 @@ export default class Explorer extends View {
     if (checking()) return;
     cx.timer.every(250, (cx) => this.tick(cx));
     cx.timer.every(15000, (cx) => this.refresh(cx));
+    // File events only mark things stale; at most one reload per second.
+    cx.timer.every(1000, (cx) => {
+      if (this.stale) { this.stale = false; this.marksStale = false; this.refresh(cx); }
+      else if (this.marksStale) { this.marksStale = false; this.loadMarks(this.context, cx); }
+    });
   }
 
   // From a timer: work started while drawing never runs.
@@ -80,8 +85,10 @@ export default class Explorer extends View {
           this.watching = null;
           if (!this.current(context)) return;
           // .git churn alone (Claude committing, fetches) only changes marks.
-          if (changed.length && changed.every((p) => p.includes("/.git/") || p.endsWith("/.git"))) { this.loadMarks(context, cx); continue; }
-          this.refresh(cx);
+          if (changed.length && changed.every((p) => p.includes("/.git/") || p.endsWith("/.git"))) { this.marksStale = true; continue; }
+          // Churn inside ignored build folders doesn't change what's listed.
+          if (changed.length && changed.every((p) => /\/(node_modules|\.next|dist|build|target|\.venv|__pycache__)\//.test(p))) continue;
+          this.stale = true;
         }
       } catch { this.watching = null; }
     });
@@ -216,7 +223,7 @@ export default class Explorer extends View {
   }
 
   menu(rel, dir) {
-    openOverlay({ mod: "ide-fileops", kind: "popup", width: 230, props: { mode: "menu", root: this.root, on: this.on, rel, dir, space: activeSpace()?.id } });
+    openOverlay({ mod: "ide-fileops", kind: "popup", width: 240, height: rel ? (dir ? 470 : 530) : 330, props: { mode: "menu", root: this.root, on: this.on, rel, dir, space: activeSpace()?.id } });
   }
 
   dialog(action) {
@@ -227,6 +234,7 @@ export default class Explorer extends View {
   openFolder(cx) {
     const space = activeSpace();
     if (!space) return;
+    if (space.machine) { notify({ title: "Open Folder works for this Mac's spaces", body: "On another machine, right-click a folder → Set as project root.", level: "warning" }); return; }
     cx.spawn(async () => {
       const folder = await pickFolder({ prompt: "Open folder as this space's project" });
       if (folder) setRoot(space.id, folder, null);
@@ -270,7 +278,7 @@ export default class Explorer extends View {
 
   render(cx) {
     const t = theme(), p = project();
-    const rows = this.root ? this.rows("", 0, [], t) : [];
+    const rows = this.root && !this.rootClosed ? this.rows("", 0, [], t) : [];
     // Scroll requests run after layout; keep asking for a few frames while folders load.
     if (this.scrollTo) {
       const index = this.flatIndex(this.scrollTo);
@@ -280,16 +288,18 @@ export default class Explorer extends View {
     return v_flex().id("ide-explorer").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.8)
       .child(h_flex().h(34).flex_none().pl(14).pr(8).gap(2).items_center()
         .child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child("EXPLORER"))
-        .child(this.tool("ex-new-file", "New file", "mods/workspace-chrome/square-pen.svg", () => this.dialog("file"), t))
-        .child(this.tool("ex-new-folder", "New folder", "mods/workspace-chrome/folder-plus.svg", () => this.dialog("folder"), t))
-        .child(this.tool("ex-refresh", "Refresh", "mods/workspace-chrome/clock.svg", (cx) => { this.loading = false; this.refresh(cx); }, t))
-        .child(this.tool("ex-collapse", "Collapse folders", "mods/workspace-chrome/minus.svg", (cx) => this.collapseAll(cx), t)))
+        .child(this.tool("ex-new-file", "New file", "mods/ide-explorer/icons/file-plus.svg", () => this.dialog("file"), t))
+        .child(this.tool("ex-new-folder", "New folder", "mods/ide-explorer/icons/folder-plus.svg", () => this.dialog("folder"), t))
+        .child(this.tool("ex-refresh", "Refresh", "mods/ide-explorer/icons/refresh.svg", (cx) => { this.loading = false; this.refresh(cx); }, t))
+        .child(this.tool("ex-collapse", "Collapse folders", "mods/ide-explorer/icons/collapse.svg", (cx) => this.collapseAll(cx), t)))
       .child(h_flex().id("ex-project").h(26).flex_none().px(10).gap(6).items_center().cursor_pointer().hover((s) => s.bg(t.hover))
-        .tooltip(p ? `${p.path}\nFixed project folder: it doesn't follow cd. Click to choose another.` : "Choose a folder")
-        .on_click((_e, cx) => this.openFolder(cx))
+        .tooltip(p ? `${p.path}\nThe project folder is fixed: it doesn't follow cd.` : "Choose a folder")
+        .on_click((_e, cx) => { if (p) { this.rootClosed = !this.rootClosed; cx.notify(); } else this.openFolder(cx); })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); if (this.root) this.menu("", true); })
-        .child(svg("mods/files/chevron-down.svg").size(11).flex_none().text_color(t.dim))
+        .child(svg(`mods/files/chevron-${this.rootClosed ? "right" : "down"}.svg`).size(11).flex_none().text_color(t.dim))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_semibold().child((p?.name ?? "No folder").toUpperCase()))
+        .child(div().id("ex-open-folder").p(3).rounded(4).text_color(t.dim).hover((s) => s.bg(t.raised).text_color(t.foreground)).tooltip("Open another folder as this space's project")
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); this.openFolder(cx); }).child(svg("mods/ide-explorer/icons/folder-open.svg").size(12)))
         .when(Boolean(p?.on), (e) => e.child(div().text_size(10.5).text_color(t.accent).child(p.on))))
       .child(v_flex().id("ex-tree").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).pb(10)
         .on_mouse_down("right", () => { if (this.root) this.menu("", true); })
@@ -298,7 +308,7 @@ export default class Explorer extends View {
           .child(div().child("This space has no project folder yet."))
           .child(div().id("ex-pick").h(28).px(12).flex().items_center().justify_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).cursor_pointer().on_click((_e, cx) => this.openFolder(cx)).child("Open Folder…"))))
         .when(Boolean(p) && (Boolean(this.error) || !this.entries.get("")?.length), (e) => e.child(div().p(12).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading…" : "Empty folder"))))
-        .when(Boolean(this.limited), (e) => e.child(div().p(10).text_size(11).text_color(t.dim).child("Showing the first 1,000 entries per folder"))));
+        .when(Boolean(this.limited), (e) => e.child(div().p(10).text_size(11).text_color(t.dim).child("Some entries are hidden (1,000 per folder, 8,000 in all)"))));
   }
 
   // The row index of a path in the flattened tree, or -1 while it isn't loaded yet.

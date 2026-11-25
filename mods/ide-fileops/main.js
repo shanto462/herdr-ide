@@ -54,7 +54,9 @@ export default class FileOps extends View {
     const { on } = props(), clip = shared(CLIP), into = this.inside();
     this.work(cx, async () => {
       if (clip.cut) {
-        await move(exec, clip.path, `${this.abs(into)}/${clip.name}`, on);
+        const dest = `${this.abs(into)}/${clip.name}`;
+        await move(exec, clip.path, dest, on);
+        this.repoint(clip.path, dest);
         setShared(CLIP, null);
       } else await copyInto(exec, clip.path, this.abs(into), on);
       this.after({ expand: into });
@@ -142,7 +144,7 @@ export default class FileOps extends View {
     this.busy = true;
     const path = this.abs(props().rel);
     cx.spawn(async (cx) => {
-      try { await trash(exec, path); this.closeViewers(path); this.after({}); this.close(); }
+      try { await trash(exec, path, props().on ?? null); this.closeViewers(path); this.after({}); this.close(); }
       catch (e) { this.busy = false; this.error = String(e.message ?? e); cx.notify(); }
     });
   }

@@ -3,14 +3,14 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { theme, layout, run, shared, setShared, agents, openOverlay, checking, nextCommand } from "herdr";
-import { activeSpace, project, findNode, SCM, ACTIVE } from "./common.js";
+import { activeSpace, project, findNode, SCM, ACTIVE, CURSOR } from "./common.js";
 
 const VIEWS = [
   { child: "view-explorer", icon: "mods/workspace-chrome/files.svg", tip: "Project (⌘⇧E)" },
   { child: "view-git", icon: "mods/workspace-chrome/git-branch.svg", tip: "Git (⌘⇧G)" },
   { child: "view-search", icon: "mods/workspace-chrome/search.svg", tip: "Search (⌘⇧F)" },
   { child: "view-spaces", icon: "mods/workspace-chrome/layers.svg", tip: "Spaces" },
-  { child: "view-agents", icon: "mods/workspace-chrome/monitor.svg", tip: "Agents" },
+  { child: "view-agents", icon: "mods/ide-explorer/icons/bot.svg", tip: "Agents" },
 ];
 
 export function showView(child, keep = false) {
@@ -28,6 +28,7 @@ export default class Status extends View {
         const c = await nextCommand();
         if (c === "explorer") showView("view-explorer", true);
         else if (c === "git") showView("view-git", true);
+        else if (c === "goto_line") openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } });
         else if (c === "search") { showView("view-search", true); setShared("ide.find.focus", Date.now()); }
         cx.notify();
       }
@@ -60,8 +61,9 @@ export default class Status extends View {
       .when(Boolean(active), (e) => e
         .child(div().max_w(420).truncate().text_color(t.dim).child(active.rel ?? ""))
         .when(Boolean(active.dirty), (x) => x.child(div().text_color(t.blocked).child("● unsaved")))
+        .when(Boolean(active.uid) && shared(CURSOR)?.uid === active.uid, (x) => x.child(btn("s-cursor", div().child(`Ln ${shared(CURSOR).line}, Col ${shared(CURSOR).column}`), "Go to line (⌃G)", () => openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } }))))
         .child(div().px(6).text_color(t.muted).child(active.language ?? "")))
       .child(div().w(1).h(12).mx(4).bg(t.border))
-      .child(btn("s-cmds", div().child("⌘⇧P"), "Command palette", () => run("app.palette")));
+      .child(btn("s-cmds", div().child("⌘⇧P"), "IDE commands", () => run("mod.open", { name: "ide-commands" })));
   }
 }

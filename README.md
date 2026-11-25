@@ -20,7 +20,14 @@ A Zed-style IDE layout for [Herdr](https://herdr.dev): one tab strip for termina
   - Every diff opens as a tab.
 - **Branch picker** to switch, create, or compare against a branch.
 - **Worktree picker** to switch, create or remove worktrees. It re-roots the IDE, not your space.
-- **Search in files** (ripgrep), **Go to file** (⌘P), and ⌘-click on `path:line` in any terminal.
+- **Agent-turn review.** When an agent finishes working, the Git panel lists the files that turn changed. You can open each change as a diff, or revert one file or the whole turn.
+- **Home tab in every space.** Closing every other tab never closes the space, and a new space (⌘N) starts with nothing running.
+- **Search and navigation:**
+  - Search in files (ripgrep).
+  - Go to file (⌘P) with recent files, plus `name:42` / `:42` for lines.
+  - An IDE command palette (⌘⇧P).
+  - ⌘-click on `path:line` in any terminal.
+  - Ln/Col in the status bar.
 
 ## Install
 

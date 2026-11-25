@@ -9,7 +9,7 @@ set -eu
 
 APP="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-MODS="ide-branches ide-editor ide-editor-menu ide-explorer ide-fileops ide-find ide-git ide-quickopen ide-status ide-tabs ide-titlebar ide-worktrees"
+MODS="ide-branches ide-commands ide-home ide-editor ide-editor-menu ide-explorer ide-fileops ide-find ide-git ide-quickopen ide-status ide-tabs ide-titlebar ide-worktrees"
 
 rm -rf "$REPO/mods" "$REPO/layouts"
 mkdir -p "$REPO/mods" "$REPO/layouts"

@@ -1,12 +1,14 @@
-// Find a file by name and open it in the center viewer.
+// Go to file (⌘P). Empty query: recent files. "name:42" opens at line 42; ":42" moves
+// the shown editor to line 42.
 import { View, div, svg } from "gpui-kit";
+import { props, closeOverlay } from "herdr";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, theme, run, shared, setShared } from "herdr";
+import { exec, theme, run, shared, setShared } from "herdr";
 import { makeEntry, search } from "./score.js";
-import { project, activeSpace, openInEditor } from "./common.js";
+import { project, activeSpace, openInEditor, RECENT, ACTIVE, GOTO } from "./common.js";
 
 const VISIBLE = 14, LIMIT = 200;
-const close = () => run("mod.open", { name: "ide-quickopen" });
+const close = () => (props()?.overlay ? closeOverlay(props().overlay) : run("mod.open", { name: "ide-quickopen" }));
 
 // Searches the space's fixed project folder.
 function location() {
@@ -18,7 +20,8 @@ export default class Search extends View {
   init(_props, cx) {
     this.entries = []; this.results = []; this.at = 0; this.top = 0; this.query = ""; this.status = "Reading files…";
     this.handle = cx.focus_handle();
-    this.input = InputState.new({ placeholder: "Go to file…" });
+    this.input = InputState.new({ placeholder: props()?.line ? "Go to line…" : "Go to file…   (name:42 for a line, :42 in the open file)" });
+    if (props()?.line) { this.input.set_value(":"); this.query = ":"; }
     this.input.on("change", (_e, cx) => { this.query = this.input.value(); this.refilter(); cx.notify(); });
     this.input.on("submit", (_e, cx) => this.open(this.results[this.at], cx));
     this.input.focus();
@@ -35,10 +38,12 @@ export default class Search extends View {
         const inGit = top.code === 0;
         this.root = cwd; this.on = on;
         const r = inGit
-          ? await exec("git", ["ls-files", "-co", "--exclude-standard"], { cwd, on })
-          : await exec("rg", ["--files", "--hidden", "-g", "!.git"], { cwd: this.root, on });
+          // -z keeps unusual names verbatim (no quoting); --deleted is subtracted below.
+          ? await exec("git", ["ls-files", "-z", "-co", "--exclude-standard"], { cwd, on })
+          : await exec("rg", ["--files", "--hidden", "-g", "!.git", "--null"], { cwd: this.root, on });
         if (r.code !== 0) throw new Error(r.stderr || "Cannot list files");
-        this.entries = r.stdout.split("\n").filter(Boolean).sort().map(makeEntry);
+        const gone = inGit ? new Set((await exec("git", ["ls-files", "-z", "--deleted"], { cwd, on })).stdout.split("\0")) : new Set();
+        this.entries = [...new Set(r.stdout.split(/[\0\n]/).filter((f) => f && !gone.has(f)))].sort().map(makeEntry);
         this.status = null;
         this.refilter();
       } catch (e) { this.status = String(e); }
@@ -46,8 +51,21 @@ export default class Search extends View {
     });
   }
 
+  // ":42" → a line in the shown file; "name:42" → that line of a file.
+  parse() {
+    const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(this.query.trim());
+    return m ? { name: m[1], line: +m[2], column: m[3] ? +m[3] : 1 } : { name: this.query.trim(), line: null };
+  }
+
   refilter() {
-    this.results = search(this.query, this.entries, LIMIT);
+    const q = this.parse();
+    this.line = q.line; this.column = q.column;
+    if (!q.name) {
+      const space = activeSpace(), recent = space ? shared(RECENT)?.[space.id] ?? [] : [];
+      const rel = new Set(recent.filter((r) => r.path.startsWith(`${this.root}/`)).map((r) => r.path.slice(this.root.length + 1)));
+      this.results = q.line ? [] : [...rel].map(makeEntry);
+      this.recent = true;
+    } else { this.results = search(q.name, this.entries, LIMIT); this.recent = false; }
     this.at = 0; this.top = 0;
   }
 
@@ -59,8 +77,15 @@ export default class Search extends View {
   }
 
   open(entry) {
+    const q = this.parse();
+    if (!q.name && q.line) {
+      const a = shared(ACTIVE)?.[activeSpace()?.id];
+      if (a?.uid) setShared(GOTO, { uid: a.uid, line: q.line, column: q.column ?? 1, at: `${Date.now()}` });
+      close();
+      return;
+    }
     if (!entry || !this.root) return;
-    openInEditor({ path: `${this.root}/${entry.path}`, on: this.on, rel: entry.path });
+    openInEditor({ path: `${this.root}/${entry.path}`, on: this.on, rel: entry.path, ...(q.line ? { line: q.line, column: q.column } : {}) });
     close();
   }
 
@@ -95,7 +120,8 @@ export default class Search extends View {
         .child(Input.new(this.input).flex_1().h_full().text_size(13).text_color(t.foreground))
         .child(div().flex_none().text_size(11).text_color(t.dim).child(this.entries.length ? `${this.results.length === LIMIT ? `${LIMIT}+` : this.results.length} of ${this.entries.length}` : "")))
       .child(v_flex().flex_1().min_h(0)
+        .when(Boolean(this.recent) && shown.length > 0, (e) => e.child(div().px(10).pt(2).pb(4).text_size(10.5).font_semibold().text_color(t.dim).child("RECENT")))
         .children(shown.map((entry, i) => this.row(entry, this.top + i, t)))
-        .when(!shown.length, (e) => e.child(div().p(10).text_color(t.dim).child(this.status ?? "No matching files"))));
+        .when(!shown.length, (e) => e.child(div().p(10).text_color(t.dim).child(this.status ?? (this.line && !this.parse().name ? `↵ go to line ${this.line} in the shown file` : this.recent ? "No recent files: type to search" : "No matching files")))));
   }
 }

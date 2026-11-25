@@ -6,8 +6,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, v_virtual_list } from "gpui-base";
 import * as fs from "fs/promises";
-import { props, shared, setShared, exec, notify, appHome, readTextFile, writeTextFile, nextCommand, theme, settings, checking, run, spaces, panes, focused } from "herdr";
-import { FS, CMD, FILETABS, DIRTY, GOTO, activeSpace, project, relTo, openInEditor } from "./common.js";
+import { props, shared, setShared, exec, notify, openOverlay, appHome, readTextFile, writeTextFile, nextCommand, theme, settings, checking, run, spaces, panes, focused } from "herdr";
+import { FS, CMD, FILETABS, DIRTY, GOTO, CURSOR, activeSpace, project, relTo, openInEditor, closeTab } from "./common.js";
 import { resolveLink, findHeading } from "./links.js";
 
 // Names the built-in highlighter accepts.
@@ -111,7 +111,8 @@ export default class IdeEditor extends View {
   async close() {
     const b = this.b;
     if (b.code && b.dirty && !b.on) await writeDraft(b.path, b.code.value(), b.disk).catch(() => {});
-    if (this.dirtyShared) { const d = { ...(shared(DIRTY) ?? {}) }; delete d[this.uid]; setShared(DIRTY, d); }
+    if (this.dirtyShared !== null) { const d = { ...(shared(DIRTY) ?? {}) }; delete d[this.uid]; setShared(DIRTY, d); }
+    b.code?.release();
   }
 
   rel(b) { return b.rel ?? relTo(b.root ?? project()?.path, b.path); }
@@ -143,6 +144,10 @@ export default class IdeEditor extends View {
     else if (c === "preview") { if (b.markdown) { b.mdPreview = !b.mdPreview; b.view++; } }
     else if (c === "focus") { if (b.code) b.code.focus(); }
     else if (c === "reveal") { if (!b.on) exec("open", ["-R", b.path]); }
+    else if (c === "goto_line") openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } });
+    // From the unsaved-close prompt.
+    else if (c === "save_close") { this.closeAfterSave = true; this.save(b, cx); }
+    else if (c === "discard_close") { if (b.dirty) { b.code.set_value(b.disk ?? ""); b.dirty = false; b.draftStale = false; dropDraft(b.path); } const tab = this.me()?.tab; if (tab) closeTab(tab); }
   }
 
   tick(cx) {
@@ -157,6 +162,15 @@ export default class IdeEditor extends View {
     if (b.code && b.line && !b.loading) this.goLine(b, cx);
     if (b.code && b.wantFocus) { b.wantFocus = false; b.code.focus(); }
     this.publishDirty();
+    if (b.code && Date.now() - (this.cursorAt ?? 0) > 250 && this.isTarget()) {
+      this.cursorAt = Date.now();
+      const at = b.code.selected_range().end;
+      if (at !== this.cursorOffset) {
+        this.cursorOffset = at;
+        const before = b.code.value().slice(0, at), line = before.split("\n").length, column = at - before.lastIndexOf("\n");
+        setShared(CURSOR, { uid: this.uid, line, column });
+      }
+    }
   }
 
   flush() {
@@ -171,7 +185,7 @@ export default class IdeEditor extends View {
     const b = this.b;
     if (!this.shown() || b.loading || b.saving || b.state === "new") return;
     if (b.kind === "file") this.load(b, cx);
-    else if (b.kind === "diff" && !b.ref.startsWith("commit:")) this.load(b, cx);
+    else if (b.kind === "diff" && !b.ref.startsWith("commit:") && !b.ref.startsWith("turn:")) this.load(b, cx);
   }
 
   goLine(b, cx) {
@@ -382,6 +396,7 @@ export default class IdeEditor extends View {
     try {
       let args;
       if (b.ref.startsWith("commit:")) args = ["show", "--format=", "--no-ext-diff", "--no-textconv", "--no-color", b.ref.slice(7), "--", rel];
+      else if (b.ref.startsWith("turn:")) { const [from, to] = b.ref.slice(5).split(".."); args = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", from, to, "--", rel]; }
       else {
         const base = b.ref.slice(5);
         const mb = await exec("git", [...READ, "merge-base", base, "HEAD"], { cwd: root, on });
@@ -436,7 +451,9 @@ export default class IdeEditor extends View {
         b.disk = text; b.changed = false; b.latest = null; b.recovered = false; b.draftStale = false;
         b.dirty = b.code.value() !== text;
         await dropDraft(path);
+        if (this.closeAfterSave && !b.dirty) { this.closeAfterSave = false; const tab = this.me()?.tab; if (tab) closeTab(tab); }
       } catch (e) {
+        this.closeAfterSave = false;
         b.saveError = String(e.message ?? e).replace(/^.*?`: /, "");
       } finally {
         b.saving = false;

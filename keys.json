@@ -4,6 +4,8 @@
     "cmd-s": "ide-editor.save",
     "cmd-shift-e": "ide-status.explorer",
     "cmd-shift-g": "ide-status.git",
-    "cmd-shift-f": "ide-status.search"
+    "cmd-shift-f": "ide-status.search",
+    "cmd-shift-p": "mod.open:ide-commands",
+    "cmd-n": "ide-tabs.new_space"
   }
 }

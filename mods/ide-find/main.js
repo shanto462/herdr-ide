@@ -19,6 +19,11 @@ export default class Find extends View {
     this.input.on("change", (_e, cx) => { this.typedAt = Date.now(); this.dirty = true; });
     if (checking()) return;
     this.focusAt = shared("ide.find.focus");
+    cx.timer.every(250, (cx) => {
+      // Results belong to one project: another space or worktree starts over.
+      const p = project(), key = p ? `${p.on ?? ""}|${p.path}` : null;
+      if (key !== this.projectKey) { const first = this.projectKey === undefined; this.projectKey = key; if (!first) { this.groups = []; this.total = 0; if (this.input.value()) this.search(cx); else cx.notify(); } }
+    });
     cx.timer.every(250, (cx) => { const f = shared("ide.find.focus"); if (f !== this.focusAt) { this.focusAt = f; this.input.focus(); } if (this.dirty && Date.now() - this.typedAt > 350) { this.dirty = false; this.search(cx); } });
     cx.spawn(async (cx) => {
       for (;;) {
@@ -36,8 +41,7 @@ export default class Find extends View {
     this.status = "Searching…";
     cx.notify();
     const args = ["--line-number", "--column", "--no-heading", "--color", "never", "--max-columns", "300", "--max-columns-preview", "--max-count", "200", "--hidden", "-g", "!.git", "--null"];
-    if (!this.caseSensitive) args.push("--smart-case");
-    else args.push("--case-sensitive");
+    args.push(this.caseSensitive ? "--case-sensitive" : "--ignore-case");
     if (!this.regex) args.push("--fixed-strings");
     if (this.word) args.push("--word-regexp");
     const include = this.include.value().trim();
@@ -53,7 +57,8 @@ export default class Find extends View {
       }
       if (this.run !== run) return;
       if (!r) { this.status = "Search failed"; cx.notify(); return; }
-      if (r.code > 1) { this.status = (r.stderr || "Search failed").trim().split("\n")[0]; this.groups = []; cx.notify(); return; }
+      // ripgrep exits 2 when some file couldn't be read, even with matches: keep them.
+      if (r.code > 1 && !r.stdout) { this.status = (r.stderr || "Search failed").trim().split("\n")[0]; this.groups = []; cx.notify(); return; }
       const byFile = new Map();
       let total = 0;
       for (const line of r.stdout.split("\n")) {

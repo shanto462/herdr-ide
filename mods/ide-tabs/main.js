@@ -1,8 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, layout, settings, exec, hc, notify, shared, setShared } from "herdr";
+import { spaces, panes, agents, run, openOverlay, theme, window, layout, settings, exec, hc, notify, shared, setShared, setWindowTitle, setBadge, checking, nextCommand, pickFolder } from "herdr";
 import { SHORTCUTS, SAVED, USAGE, ACCOUNT_LABEL } from "./config.js";
-import { project, activeSpace, relTo, languageName, fileTint, OPEN, ACTIVE, FILETABS, DIRTY, GOTO } from "./common.js";
+import { project, activeSpace, relTo, languageName, fileTint, closeTab, sh, setRoot, OPEN, ACTIVE, FILETABS, DIRTY, GOTO, RECENT, TURNS } from "./common.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -40,6 +40,13 @@ export default class Tabs extends View {
     this.lastOpen = shared(OPEN)?.at;
     this.hoverTab = null;
     cx.timer.every(150, (cx) => this.files(cx));
+    this.agentState = {}; this.turnStarts = {}; this.homePending = new Set();
+    this.launchAt = shared("ide.launch")?.at;
+    if (!checking()) {
+      cx.timer.every(1500, (cx) => this.ensureHomes(cx));
+      cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); if (c === "new_space") this.newSpace(cx); cx.notify(); } });
+    }
+    if (!checking()) cx.timer.every(700, (cx) => this.trackTurns(cx));
   }
 
   // A fresh read every minute.
@@ -117,24 +124,108 @@ export default class Tabs extends View {
     });
   }
 
-  // Rebuilds a saved space with the shortcut tabs, in order, `work` in front.
+  // ---- Spaces start empty: just their Home tab, nothing running. ----
+  homeOf(space) {
+    const ids = new Set(space.tabs.map((t) => t.id));
+    return panes().find((p) => p.mod === "ide-home" && ids.has(p.tab))?.tab ?? null;
+  }
+
+  // Every space keeps a Home tab, last in order: closing all other tabs never closes it.
+  ensureHomes(cx) {
+    for (const space of spaces()) {
+      const home = this.homeOf(space);
+      if (home) {
+        const at = space.tabs.findIndex((t) => t.id === home);
+        if (at !== space.tabs.length - 1) run("tab.move", { id: home, index: space.tabs.length });
+        continue;
+      }
+      if (this.homePending.has(space.id)) continue;
+      this.homePending.add(space.id);
+      cx.spawn(async () => {
+        try { await this.doIt("tab.new", { name: "Home", space: space.id, mod: "ide-home", focus: false }); }
+        catch {} finally { this.homePending.delete(space.id); }
+      });
+    }
+  }
+
+  // A new space on a folder with only its Home tab (no shell, no agents).
   restore(folder, cx) {
     if (this.starting) return;
     this.starting = folder;
     cx.notify();
     cx.spawn(async cx => {
       try {
-        const [first, ...rest] = SHORTCUTS;
-        const made = await this.doIt("space.new", { folder, tab: first.name, machine: "", argv: [first.command] });
-        await hc(["label", made.terminal, `${ACCOUNT_LABEL}=${first.name}`]);
-        for (const { name, command } of rest) {
-          const tab = await this.doIt("tab.new", { name, space: made.space, folder, ...(command ? { argv: [command] } : {}) });
-          if (command) await hc(["label", tab.terminal, `${ACCOUNT_LABEL}=${name}`]);
-        }
-        run("tab.select", { id: made.tab });
-      } catch (e) { notify({ title: "Could not reopen the space", body: String(e), level: "error" }); }
+        const made = await this.doIt("space.new", { folder, machine: "" });
+        const home = await this.doIt("tab.new", { name: "Home", space: made.space, mod: "ide-home" });
+        run("tab.close", { id: made.tab, confirmed: true });
+        run("tab.select", { id: home.tab });
+        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder }).catch(() => null);
+        setRoot(made.space, top?.code === 0 ? top.stdout.trim() : folder, null);
+      } catch (e) { notify({ title: "Could not open the space", body: String(e), level: "error" }); }
       finally { this.starting = null; cx.notify(); }
     });
+  }
+
+  newSpace(cx) {
+    cx.spawn(async (cx) => {
+      const folder = await pickFolder({ prompt: "Open a folder as a new space" });
+      if (!folder) return;
+      const open = spaces().find((x) => x.folder === folder || shared("ide.roots")?.[x.id]?.path === folder);
+      if (open) run("space.select", { id: open.id }); else this.restore(folder, cx);
+    });
+  }
+
+  // Unsaved file tabs ask first (save / don't save / cancel); clean ones just close.
+  closeFile(c, uid, e, isDirty) {
+    if (!isDirty) { closeTab(c.id); return; }
+    openOverlay({ mod: "ide-editor-menu", kind: "dialog", width: 400, props: { mode: "close", uid, tab: c.id, name: e.path.split("/").pop() } });
+  }
+
+  // ---- Agent turns: what each agent changed between starting and stopping work. ----
+  // A snapshot is the working tree written to a throwaway index (the real index is
+  // never touched): `git add -A` into a copy of it, then `git write-tree`.
+  snapshot(cwd, on) {
+    return sh('top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || exit 3; cd "$top" || exit 3; idx=$(mktemp); cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || rm -f "$idx"; GIT_INDEX_FILE="$idx" git add -A >/dev/null 2>&1; tree=$(GIT_INDEX_FILE="$idx" git write-tree) || exit 4; rm -f "$idx"; printf "%s\t%s" "$top" "$tree"', [cwd], { on, timeout: 60000 })
+      .then((r) => (r.code === 0 ? { top: r.stdout.split("\t")[0], tree: r.stdout.split("\t")[1].trim() } : null)).catch(() => null);
+  }
+
+  trackTurns(cx) {
+    for (const a of agents()) {
+      const was = this.agentState[a.address];
+      this.agentState[a.address] = a.status;
+      if (was === undefined || was === a.status) continue;
+      const pane = panes().find((p) => p.pane === a.pane), space = spaces().find((x) => x.id === a.space);
+      if (!pane?.cwd || !space) continue;
+      const on = space.machine ?? null;
+      if (a.status === "working") {
+        const started = { at: Date.now(), pending: this.snapshot(pane.cwd, on) };
+        this.turnStarts[a.address] = started;
+      } else if (was === "working") {
+        const start = this.turnStarts[a.address];
+        delete this.turnStarts[a.address];
+        if (start) cx.spawn(async () => this.finishTurn(a, space, pane.cwd, on, start));
+      }
+    }
+  }
+
+  async finishTurn(a, space, cwd, on, start) {
+    const before = await start.pending, after = await this.snapshot(cwd, on);
+    if (!before || !after || before.tree === after.tree || before.top !== after.top) return;
+    const git = (args) => exec("git", ["--no-optional-locks", ...args], { cwd: after.top, on });
+    const [names, nums] = await Promise.all([
+      git(["diff", "--name-status", "-z", "--no-renames", before.tree, after.tree]),
+      git(["diff", "--numstat", "-z", "--no-renames", before.tree, after.tree]),
+    ]);
+    const stat = {};
+    for (const entry of nums.stdout.split("\0")) { const [x, y, ...rest] = entry.split("\t"); if (rest.length) stat[rest.join("\t")] = { add: +x || 0, del: +y || 0 }; }
+    const parts = names.stdout.split("\0"), files = [];
+    for (let i = 0; i + 1 < parts.length; i += 2) if (parts[i]) files.push({ path: parts[i + 1], mark: parts[i][0], ...(stat[parts[i + 1]] ?? {}) });
+    if (!files.length) return;
+    const who = a.program?.name ?? "Agent", where = a.tab_name;
+    const turn = { id: `${a.address}-${start.at}`, agent: who, tab: where, terminal: a.address, top: after.top, on, before: before.tree, after: after.tree, files, at: Date.now(), started: start.at };
+    setShared(TURNS, { ...(shared(TURNS) ?? {}), [space.id]: [turn, ...(shared(TURNS)?.[space.id] ?? [])].slice(0, 20) });
+    notify({ title: `${who} changed ${files.length} file${files.length === 1 ? "" : "s"}`, body: `${where} · review them in the Git panel`, level: "info", timeout: 6000,
+      action: { name: "layout.select", args: { stack: "sidebar", child: "view-git" } } });
   }
 
   // Opens what ide.open asks for: the file's tab if it has one, else a new tab, last
@@ -147,12 +238,17 @@ export default class Tabs extends View {
       let next = null;
       for (const [uid, e] of Object.entries(reg)) {
         const sp = all.find((x) => x.id === e.space);
-        if (sp && !sp.tabs.some((t) => t.id === e.tab)) { next ??= { ...reg }; delete next[uid]; }
+        if (!sp || !sp.tabs.some((t) => t.id === e.tab)) { next ??= { ...reg }; delete next[uid]; }
         else if (e.preview && dirty[uid]) { next ??= { ...reg }; next[uid] = { ...e, preview: false }; }
       }
       if (next) setShared(FILETABS, next);
     }
     this.syncActive();
+    const launch = shared("ide.launch");
+    if (launch && launch.at !== this.launchAt) { this.launchAt = launch.at; const sc = SHORTCUTS.find((x) => x.name === launch.name); if (sc) this.goTo(sc.name, sc.command, cx); }
+    const sp = activeSpace();
+    const launchers = SHORTCUTS.map((x) => ({ name: x.name, label: x.label, open: Boolean(sp?.tabs.some((t) => t.name === x.name)) }));
+    if (JSON.stringify(launchers) !== JSON.stringify(shared("ide.launchers") ?? [])) setShared("ide.launchers", launchers);
     const req = shared(OPEN);
     if (!req || req.at === this.lastOpen || this.opening) return;
     this.lastOpen = req.at;
@@ -171,7 +267,7 @@ export default class Tabs extends View {
     const prev = req.preview ? Object.entries(reg).find(([u, e]) => e.space === space.id && e.preview && !dirty[u] && space.tabs.some((t) => t.id === e.tab)) : null;
     const uid = `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const name = req.path.split("/").pop();
-    const label = kind !== "diff" ? name : ref.startsWith("commit:") ? `${name} @${ref.slice(7, 14)}` : ref.startsWith("base:") ? `${name} ↔ ${ref.slice(5)}` : `${name} (diff)`;
+    const label = kind !== "diff" ? name : ref.startsWith("commit:") ? `${name} @${ref.slice(7, 14)}` : ref.startsWith("base:") ? `${name} ↔ ${ref.slice(5)}` : ref.startsWith("turn:") ? `${name} (agent turn)` : `${name} (diff)`;
     const entry = { space: space.id, kind, path: req.path, on, rel: req.rel ?? null, root: req.root ?? null, ref, preview: Boolean(req.preview) };
     this.opening = true;
     cx.spawn(async (cx) => {
@@ -183,6 +279,8 @@ export default class Tabs extends View {
         const index = prev ? tabsNow.findIndex((t) => t.id === prev[1].tab) : -1;
         if (prev) run("tab.close", { id: prev[1].tab, confirmed: true });
         run("tab.move", { id: made.tab, index: index >= 0 ? index + 1 : tabsNow.length });
+        const home = this.homeOf(space);
+        if (home) run("tab.move", { id: home, index: tabsNow.length - (prev ? 1 : 0) });
         run("tab.select", { id: made.tab });
       } catch (e) { notify({ title: `Could not open ${name}`, body: String(e.message ?? e), level: "error" }); }
       finally { this.opening = false; cx.notify(); }
@@ -198,7 +296,18 @@ export default class Tabs extends View {
     const hit = Object.entries(reg).find(([, e]) => e.tab === tab?.id);
     const value = hit ? { uid: hit[0], kind: hit[1].kind, path: hit[1].path, on: hit[1].on, rel: hit[1].rel ?? relTo(project()?.path, hit[1].path), language: hit[1].kind === "diff" ? "Diff" : languageName(hit[1].path.split("/").pop()), dirty: Boolean(dirty[hit[0]]) } : null;
     const was = shared(ACTIVE)?.[space.id] ?? null;
-    if (JSON.stringify(was) !== JSON.stringify(value)) setShared(ACTIVE, { ...(shared(ACTIVE) ?? {}), [space.id]: value });
+    if (JSON.stringify(was) !== JSON.stringify(value)) {
+      setShared(ACTIVE, { ...(shared(ACTIVE) ?? {}), [space.id]: value });
+      if (value?.kind === "file") {
+        const list = (shared(RECENT)?.[space.id] ?? []).filter((r) => r.path !== value.path);
+        setShared(RECENT, { ...(shared(RECENT) ?? {}), [space.id]: [{ path: value.path, on: value.on, rel: value.rel }, ...list].slice(0, 30) });
+      }
+    }
+    // The OS window title follows the shown file; the Dock badge counts blocked agents.
+    const title = value ? `${value.rel ?? value.path.split("/").pop()} — ${project()?.name ?? space.name}` : `${project()?.name ?? space.name} — Herdr`;
+    if (title !== this.title) { this.title = title; setWindowTitle(title); }
+    const blocked = agents().filter((a) => a.status === "blocked").length;
+    if (blocked !== this.badge) { this.badge = blocked; setBadge(blocked ? String(blocked) : null); }
   }
 
   // The sidebar's + asks for a folder and leaves it in shared "trio.open".
@@ -217,7 +326,9 @@ export default class Tabs extends View {
   render() {
     const t = theme();
     const space = spaces().find(p => p.active);
-    const shown = space?.tabs ?? [];
+    const homeTab = space ? this.homeOf(space) : null;
+    const shown = (space?.tabs ?? []).filter((c) => c.id !== homeTab);
+    const homeActive = Boolean(homeTab && space.tabs.find((c) => c.id === homeTab)?.active);
     const stop = (_e, cx) => cx.stop_propagation();
     const icon = (id, path, tip, action, on = false) => div().id(id).size(24).flex_none().flex().items_center().justify_center().rounded(5)
       .text_color(on ? t.foreground : t.dim).when(on, el => el.bg(t.selected)).hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
@@ -237,12 +348,12 @@ export default class Tabs extends View {
           if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
           else run("tab.select", { id: c.id });
         })
-        .on_mouse_down("middle", () => run("tab.close", { id: c.id }))
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "ide-editor-menu", kind: "popup", width: 230, props: { uid, tab: c.id, space: space.id, path: e.path, on: e.on, kind: e.kind, rel: e.rel ?? relTo(project()?.path, e.path), root: e.root, dirty: isDirty } }); })
+        .on_mouse_down("middle", () => this.closeFile(c, uid, e, isDirty))
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "ide-editor-menu", kind: "popup", width: 240, height: isDirty ? 412 : 356, props: { uid, tab: c.id, space: space.id, path: e.path, on: e.on, kind: e.kind, rel: e.rel ?? relTo(project()?.path, e.path), root: e.root, dirty: isDirty } }); })
         .child(e.kind === "diff" ? svg("mods/workspace-chrome/git-compare.svg").size(12).flex_none().text_color(t.blocked) : div().size(8).flex_none().rounded(2).bg(fileTint(name, t)))
         .child(div().max_w(200).truncate().when(Boolean(e.preview), el => el.italic()).child(c.name))
         .child(div().id(`close-${c.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).hover(s => s.bg(t.raised))
-          .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id, confirmed: true }); })
+          .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.closeFile(c, uid, e, isDirty); })
           .child(isDirty && !hovered ? div().size(7).rounded(4).bg(c.active ? t.foreground : t.muted) : (c.active || hovered) ? svg("mods/pane/close.svg").size(10).text_color(t.dim) : div()));
     };
     const item = (c, i) => {
@@ -250,7 +361,8 @@ export default class Tabs extends View {
       if (file) return fileItem(c, i, file);
       const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
-      return h_flex().id(`tab-${c.id}`).h_full().px(10).gap(6).items_center().flex_none().text_size(12.3)
+      return h_flex().id(`tab-${c.id}`).h_full().pl(10).pr(5).gap(6).items_center().flex_none().text_size(12.3)
+        .on_hover((h, cx) => { const next = h ? c.id : this.hoverTab === c.id ? null : this.hoverTab; if (next !== this.hoverTab) { this.hoverTab = next; cx.notify(); } })
         .when(c.active, el => el.bg(t.background).border_t_2().border_color(t.accent).text_color(t.foreground))
         .when(!c.active, el => el.text_color(t.muted).hover(s => s.bg(t.hover)))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
@@ -265,15 +377,21 @@ export default class Tabs extends View {
         .child(div().max_w(160).truncate().child(c.zoomed ? `${name} Z` : name))
         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
         .when(c.status === "blocked" || c.status === "done", el => el.child(div().size(6).rounded(3).bg(t[c.status])))
-        .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).hover(s => s.text_color(t.foreground)).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(11))));
+        .child(div().id(`close-${c.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).hover(s => s.bg(t.raised))
+          .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); })
+          .child(c.active || this.hoverTab === c.id ? svg("mods/pane/close.svg").size(10).text_color(t.dim) : div()));
     };
         const textButton = (id, label, on, action) => h_flex().id(id).h(24).px(7).gap(5).flex_none().items_center().rounded(5)
       .text_size(11.8).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
       .hover(s => s.bg(t.hover)).on_mouse_down("left", stop).on_click(action).child(label);
     const p = project();
     return h_flex().size_full().min_w(0).pr(6).gap(2).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .on_mouse_up("left", () => { this.pressed = null; })
+      .when(Boolean(homeTab), (el) => el.child(div().id("tab-home").h_full().w(34).flex_none().flex().items_center().justify_center()
+        .when(homeActive, (e) => e.bg(t.background).border_t_2().border_color(t.accent).text_color(t.foreground))
+        .when(!homeActive, (e) => e.text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)))
+        .tooltip("Home").on_mouse_down("left", stop).on_click(() => run("tab.select", { id: homeTab }))
+        .child(svg("mods/ide-explorer/icons/home.svg").size(14))))
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().overflow_x_scrollbar().children(shown.map(item))
         .child(div().id("tab-new").size(24).ml(4).flex_none().flex().items_center().justify_center().rounded(5).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
           .tooltip(p ? `New terminal in ${p.name}` : "New terminal").on_mouse_down("left", stop)

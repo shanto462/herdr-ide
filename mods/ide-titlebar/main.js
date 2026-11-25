@@ -33,7 +33,7 @@ export default class Titlebar extends View {
         scm.behind ? div().text_size(11).text_color(t.dim).child(`↓${scm.behind}`) : null,
         svg("mods/files/chevron-down.svg").size(10).text_color(t.dim),
       ].filter(Boolean), "Switch branch", () => openOverlay({ mod: "ide-branches", kind: "popup", width: 460, height: 520, props: { mode: "switch" } }))))
-      .when(Boolean(scm?.branch), (e) => e.child(chip("tb-worktree", [svg("mods/workspace-chrome/layers.svg").size(13), div().text_size(12).child("worktrees")],
+      .when(Boolean(scm?.branch), (e) => e.child(chip("tb-worktree", [svg("mods/ide-explorer/icons/worktree.svg").size(13), div().text_size(12).child("worktrees")],
         "Switch worktree (stays in this space)", () => openOverlay({ mod: "ide-worktrees", kind: "popup", width: 520, height: 460 }))))
       .child(h_flex().flex_1().min_w(0).justify_center()
         .child(h_flex().id("tb-cmd").w(420).max_w_full().h(26).px(10).gap(8).items_center().rounded(7).border_1().border_color(t.border).bg(t.background).cursor_pointer()

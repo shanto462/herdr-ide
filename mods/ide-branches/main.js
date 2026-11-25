@@ -4,7 +4,7 @@
 //   that worktree instead (same space, no space switch).
 // base:  pick what the Git panel's BRANCH DIFF compares against.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { props, closeOverlay, theme, exec, shared, setShared, notify, checking } from "herdr";
 import { project, activeSpace, setRoot } from "./common.js";
 
@@ -15,6 +15,7 @@ export default class Branches extends View {
   init(_props, cx) {
     this.branches = []; this.query = ""; this.at = 0; this.status = "Loading branches…";
     this.handle = cx.focus_handle();
+    this.scroll = ScrollHandle.new();
     this.input = InputState.new({ placeholder: props()?.mode === "base" ? "Compare against branch…" : "Switch to branch, or type a new name…" });
     this.input.on("change", (_e, cx) => { this.query = this.input.value().trim(); this.at = 0; cx.notify(); });
     this.input.on("submit", (_e, cx) => this.choose(this.items()[this.at], cx));
@@ -64,21 +65,21 @@ export default class Branches extends View {
     return out;
   }
 
-  close() { closeOverlay(props().overlay); }
+  dismiss() { closeOverlay(props().overlay); }
 
   choose(item, cx) {
     if (!item || this.busy) return;
     const mode = props()?.mode;
     if (mode === "base") {
       setShared(BASES, { ...(shared(BASES) ?? {}), [this.top]: item.b.name });
-      this.close();
+      this.dismiss();
       return;
     }
-    if (item.type === "branch" && item.b.current) { this.close(); return; }
+    if (item.type === "branch" && item.b.current) { this.dismiss(); return; }
     if (item.type === "branch" && item.b.worktree && item.b.worktree !== this.top) {
       setRoot(activeSpace().id, item.b.worktree, project().on);
       notify({ title: `Switched to worktree ${item.b.worktree.split("/").pop()}`, body: `${item.b.name} is checked out there. Terminals keep their folders.`, timeout: 3500 });
-      this.close();
+      this.dismiss();
       return;
     }
     const args = item.type === "create" ? ["switch", "-c", item.name] : item.b.remote ? ["switch", "--track", item.b.name] : ["switch", item.b.name];
@@ -87,7 +88,7 @@ export default class Branches extends View {
     cx.spawn(async (cx) => {
       const r = await this.git(args).catch((e) => ({ code: 1, stderr: String(e) }));
       this.busy = false;
-      if (r.code === 0) { notify({ title: item.type === "create" ? `Created ${item.name}` : `Switched to ${item.b.name.replace(/^[^/]+\//, item.b.remote ? "" : "$&")}`, level: "success", timeout: 2000 }); this.close(); }
+      if (r.code === 0) { notify({ title: item.type === "create" ? `Created ${item.name}` : `Switched to ${item.b.name.replace(/^[^/]+\//, item.b.remote ? "" : "$&")}`, level: "success", timeout: 2000 }); this.dismiss(); }
       else { this.error = (r.stderr || r.stdout).trim().split("\n").slice(0, 4).join("\n"); cx.notify(); }
     });
   }
@@ -95,7 +96,7 @@ export default class Branches extends View {
   compare(b) {
     setShared(BASES, { ...(shared(BASES) ?? {}), [this.top]: b.name });
     notify({ title: `Branch diff now compares against ${b.name}`, timeout: 2000 });
-    this.close();
+    this.dismiss();
   }
 
   render() {
@@ -103,18 +104,19 @@ export default class Branches extends View {
     const currentBase = this.top ? shared(BASES)?.[this.top] : null;
     return v_flex().id("ide-branches").track_focus(this.handle).size_full().min_h(0).p(8).gap(6).bg(t.popover).text_color(t.foreground).text_size(12.8)
       .on_key_down((e, cx) => {
-        if (e.key === "escape") return this.close();
+        if (e.key === "escape") return this.dismiss();
         if (e.key === "down") this.at = Math.min(items.length - 1, this.at + 1);
         else if (e.key === "up") this.at = Math.max(0, this.at - 1);
         else return;
+        this.scroll.scroll_to_item(this.at);
         cx.stop_propagation(); cx.notify();
       })
       .child(h_flex().h(34).flex_none().px(10).gap(8).items_center().rounded(7).border_1().border_color(t.accent).bg(t.background)
         .child(svg(base ? "mods/workspace-chrome/git-compare.svg" : "mods/workspace-chrome/git-branch.svg").size(14).text_color(t.dim))
         .child(Input.new(this.input).flex_1().h_full().text_size(13).text_color(t.foreground))
-        .child(div().id("br-close").size(22).flex_none().flex().items_center().justify_center().rounded(5).cursor_pointer().text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Close (Esc)").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => this.close()).child(svg("mods/pane/close.svg").size(11))))
+        .child(div().id("br-close").size(22).flex_none().flex().items_center().justify_center().rounded(5).cursor_pointer().text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Close (Esc)").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => this.dismiss()).child(svg("mods/pane/close.svg").size(11))))
       .when(Boolean(this.error), (e) => e.child(div().px(8).py(4).text_size(11.5).text_color(t.ansi1).child(this.error)))
-      .child(v_flex().id("br-list").flex_1().min_h(0).overflow_y_scrollbar()
+      .child(v_flex().id("br-list").h(400).flex_none().overflow_y_scrollbar().track_scroll(this.scroll)
         .children(items.slice(0, 300).map((it, i) => {
           if (it.type === "create") return h_flex().id("br-create").h(32).flex_none().px(10).gap(8).items_center().rounded(6).cursor_pointer()
             .when(i === this.at, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.choose(it, cx))

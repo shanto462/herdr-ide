@@ -4,7 +4,7 @@
 // follows `cd`. Explorer, Search, Source Control, Quick Open and new terminals all
 // use it. It changes only when the person picks another (Open Folder…, or
 // "Set as project root" in the Explorer's context menu).
-import { spaces, panes, shared, setShared, exec } from "herdr";
+import { spaces, panes, shared, setShared, exec, run } from "herdr";
 
 export const ROOTS = "ide.roots";    // { [spaceId]: { path, on } }
 export const OPEN = "ide.open";      // { space, kind, path, on, root?, rel?, line?, preview?, focus?, at }
@@ -89,3 +89,20 @@ export function fileTint(name, t) {
   const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
   return t[TINT[ext]] ?? t.muted;
 }
+
+export const REVEAL = "ide.reveal";       // { path, at }: reveal a file in the Explorer
+export const AFTER = "ide.files.after";   // file actions -> Explorer
+export const FIND_FOCUS = "ide.find.focus";
+export const RECENT = "ide.recent";       // { [spaceId]: [{ path, on, rel }] } most recent first
+export const CURSOR = "ide.cursor";       // { uid, line, column }
+export const TURNS = "ide.turns";         // { [spaceId]: [turn] } what each agent turn changed
+
+// Closes a tab; only skips Herdr's confirmation when the space keeps other tabs, so
+// closing a space's last tab still asks first.
+export function closeTab(id) {
+  const space = spaces().find((s) => s.tabs.some((t) => t.id === id));
+  run("tab.close", space && space.tabs.length > 1 ? { id, confirmed: true } : { id });
+}
+
+// Runs a shell snippet on the project's machine; $1.. are the args.
+export const sh = (script, args = [], opts = {}) => exec("sh", ["-c", script, "ide", ...args], opts);

@@ -5,7 +5,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, watchFolder, theme, shared, setShared, openOverlay, notify, checking, nextCommand } from "herdr";
-import { SCM, activeSpace, project, ensureProject, openInEditor, fileTint } from "./common.js";
+import { SCM, TURNS, activeSpace, project, ensureProject, openInEditor, fileTint, sh } from "./common.js";
 
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 const BASES = "ide.git.base"; // { [repo toplevel]: branch }
@@ -25,16 +25,18 @@ function numstat(text) {
 
 export default class Git extends View {
   init(_props, cx) {
-    this.state = null; this.sections = { staged: true, changes: true, branch: true, history: false };
+    this.state = null; this.sections = { turns: true, staged: true, changes: true, branch: true, history: false };
     this.commits = []; this.commitFiles = {}; this.expanded = new Set();
     this.message = "";
-    this.input = InputState.new({ placeholder: "Commit message (⌘⏎ to commit)" });
+    this.input = InputState.new({ placeholder: "Commit message (⏎ to commit)" });
     this.input.on("change", (_e, cx) => { const had = Boolean(this.message.trim()); this.message = this.input.value(); if (had !== Boolean(this.message.trim())) cx.notify(); });
     this.input.on("submit", (_e, cx) => this.commit(cx, false));
     if (checking()) return;
     cx.timer.every(300, (cx) => this.tick(cx));
     cx.timer.every(8000, (cx) => this.refresh(cx));
-    cx.timer.every(300000, (cx) => this.fetch(cx, true));
+    cx.timer.every(300000, (cx) => this.backgroundFetch(cx));
+    // File events only mark the panel stale; one refresh per 1.5s at most.
+    cx.timer.every(1500, (cx) => { if (this.stale) { this.stale = false; this.refresh(cx); } });
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -51,7 +53,7 @@ export default class Git extends View {
     const p = project();
     const key = p ? `${p.on ?? ""}|${p.path}` : null;
     if (key !== this.key) {
-      this.key = key; this.p = p; this.state = null; this.commits = []; this.commitFiles = {}; this.expanded = new Set(); this.error = null;
+      this.key = key; this.p = p; this.top = null; this.state = null; this.historyLoaded = false; this.commits = []; this.commitFiles = {}; this.expanded = new Set(); this.error = null;
       this.watching?.cancel?.(); this.watching = null;
       this.refresh(cx);
       cx.notify();
@@ -60,7 +62,8 @@ export default class Git extends View {
     if (this.state && base && base !== this.state.base) this.refresh(cx);
   }
 
-  git(args, opts = {}) { return exec("git", opts.write ? args : [...READ, ...args], { cwd: this.p.path, on: this.p.on, timeout: opts.timeout ?? 30000 }); }
+  // Porcelain paths are relative to the repo top, so once it's known every command runs there.
+  git(args, opts = {}) { return exec("git", opts.write ? args : [...READ, ...args], { cwd: this.top ?? this.p.path, on: this.p.on, timeout: opts.timeout ?? 30000 }); }
 
   watch(cx) {
     if (!this.p || this.p.on || this.watching) return;
@@ -71,7 +74,7 @@ export default class Git extends View {
           this.watching = watchFolder(root);
           await this.watching;
           this.watching = null;
-          if (this.key === key) this.refresh(cx);
+          if (this.key === key) this.stale = true;
         }
       } catch { this.watching = null; }
     });
@@ -87,6 +90,7 @@ export default class Git extends View {
         if (this.key !== key) return;
         if (top.code !== 0) { this.state = { repo: false }; this.publish(); return; }
         const s = { repo: true, top: top.stdout.trim() };
+        this.top = s.top;
         const [status, head, branch, staged, unstaged] = await Promise.all([
           this.git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--branch"]),
           this.git(["rev-parse", "--verify", "-q", "HEAD"]),
@@ -95,7 +99,7 @@ export default class Git extends View {
           this.git(["diff", "--numstat", "-z", "--no-renames"]),
         ]);
         s.hasHead = head.code === 0;
-        s.branch = branch.code === 0 ? branch.stdout.trim() : "(no branch)";
+        s.branch = branch.code === 0 ? branch.stdout.trim() : ((await this.git(["symbolic-ref", "--short", "-q", "HEAD"])).stdout.trim() || "(no branch)");
         if (s.branch === "HEAD") s.branch = `detached @ ${head.stdout.trim().slice(0, 7)}`;
         const stagedStat = numstat(staged.stdout), unstagedStat = numstat(unstaged.stdout);
         s.staged = []; s.changes = []; s.ahead = 0; s.behind = 0; s.upstream = null;
@@ -162,7 +166,8 @@ export default class Git extends View {
 
   async loadHistory(key) {
     const r = await this.git(["log", "-n", "80", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%D%x1e"]);
-    if (this.key !== key || r.code !== 0) return;
+    this.historyLoaded = true;
+    if (this.key !== key || r.code !== 0) { if (this.key === key) this.commits = []; return; }
     this.commits = r.stdout.split("\x1e").map((l) => l.trim()).filter(Boolean).map((l) => {
       const [sha, short, subject, author, when, refs] = l.split("\x1f");
       return { sha, short, subject, author, when, refs };
@@ -195,7 +200,15 @@ export default class Git extends View {
     });
   }
 
-  fetch(cx, quiet = false) { if (this.state?.repo && !this.busy) this.act(cx, quiet ? "Fetching" : "Fetch", [["fetch", "--all", "--prune"]]); }
+  fetch(cx) { if (this.state?.repo && !this.busy) this.act(cx, "Fetch", [["fetch", "--all", "--prune"]]); }
+  backgroundFetch(cx) {
+    if (!this.state?.repo || this.busy || this.fetching) return;
+    this.fetching = true;
+    cx.spawn(async (cx) => {
+      try { await this.git(["fetch", "--all", "--prune", "--quiet"], { write: true, timeout: 120000 }); } catch {}
+      finally { this.fetching = false; this.stale = true; }
+    });
+  }
   pull(cx) { this.act(cx, "Pull", [["pull", "--ff-only"]]); }
   push(cx) {
     const s = this.state;
@@ -234,6 +247,53 @@ export default class Git extends View {
       cx.notify();
     });
     cx.notify();
+  }
+
+  // ---------- agent turns (recorded by ide-tabs) ----------
+
+  // Puts files back the way they were when the agent started; files it created go.
+  revertTurn(turn, file, cx) {
+    if (!file && this.confirmTurn !== turn.id) { this.confirmTurn = turn.id; cx.notify(); return; }
+    this.confirmTurn = null;
+    const files = file ? [file] : turn.files;
+    cx.spawn(async (cx) => {
+      const failed = [];
+      for (const f of files) {
+        const r = f.mark === "A"
+          ? await exec("rm", ["-f", "--", `${turn.top}/${f.path}`], { on: turn.on }).catch((e) => ({ code: 1, stderr: String(e) }))
+          : await exec("git", ["--literal-pathspecs", "restore", `--source=${turn.before}`, "--worktree", "--", f.path], { cwd: turn.top, on: turn.on }).catch((e) => ({ code: 1, stderr: String(e) }));
+        if (r.code !== 0) failed.push(`${f.path}: ${(r.stderr || "").trim()}`);
+      }
+      this.note = failed.length ? `Revert failed: ${failed.join("; ")}` : null;
+      if (!failed.length) notify({ title: file ? `Reverted ${file.path}` : `Reverted ${files.length} file${files.length === 1 ? "" : "s"}`, body: `to before ${turn.agent}'s turn`, level: "success", timeout: 2500 });
+      this.stale = true;
+      cx.notify();
+    });
+  }
+
+  turnRows(t, s) {
+    const turns = (shared(TURNS)?.[activeSpace()?.id] ?? []).filter((x) => x.top === s.top);
+    if (!turns.length) return [];
+    const ago = (at) => { const m = Math.round((Date.now() - at) / 60000); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`; };
+    const rows = [this.section("turns", "AGENT TURNS", turns.length, t)];
+    if (!this.sections.turns) return rows;
+    for (const turn of turns.slice(0, 10)) {
+      const open = this.expanded.has(turn.id), add = turn.files.reduce((n, f) => n + (f.add ?? 0), 0), del = turn.files.reduce((n, f) => n + (f.del ?? 0), 0);
+      rows.push(h_flex().id(`tu-${turn.id}`).h(36).flex_none().pl(10).pr(6).gap(6).items_center().cursor_pointer().hover((x) => x.bg(t.hover))
+        .on_click((_e, cx) => { open ? this.expanded.delete(turn.id) : this.expanded.add(turn.id); cx.notify(); })
+        .child(svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none().text_color(t.dim))
+        .child(svg("mods/ide-explorer/icons/bot.svg").size(13).flex_none().text_color(t.accent))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_size(12).child(`${turn.agent} · ${turn.tab}`))
+          .child(h_flex().gap(6).text_size(10.5).text_color(t.dim).child(div().child(`${turn.files.length} file${turn.files.length === 1 ? "" : "s"} · ${ago(turn.at)}`))
+            .child(div().text_color(t.ansi2).child(`+${add}`)).child(div().text_color(t.ansi1).child(`−${del}`))))
+        .child(this.icon(`tu-rev-${turn.id}`, "mods/ide-explorer/icons/discard.svg", this.confirmTurn === turn.id ? "Click again: revert every file of this turn" : "Revert this whole turn", (cx) => this.revertTurn(turn, null, cx), t,
+          this.confirmTurn === turn.id ? div().text_color(t.ansi1).child("confirm") : null)));
+      if (open) for (const f of turn.files) rows.push(this.fileRow(f, `tf-${turn.id}-${f.path}`, t,
+        (e) => openInEditor({ kind: "diff", path: `${turn.top}/${f.path}`, on: turn.on, root: turn.top, rel: f.path, ref: `turn:${turn.before}..${turn.after}`, preview: e.click_count < 2 }),
+        [this.icon(`tf-rev-${turn.id}-${f.path}`, "mods/ide-explorer/icons/discard.svg", "Revert this file to before the turn", (cx) => this.revertTurn(turn, f, cx), t)], 1));
+    }
+    return rows;
   }
 
   // ---------- view ----------
@@ -276,9 +336,9 @@ export default class Git extends View {
     const head = h_flex().h(34).flex_none().pl(14).pr(6).gap(1).items_center()
       .child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child("GIT"))
       .when(Boolean(s?.repo), (e) => e
-        .child(this.icon("g-fetch", "mods/workspace-chrome/clock.svg", "Fetch all remotes", (cx) => this.fetch(cx), t))
-        .child(this.icon("g-pull", "mods/workspace-chrome/chevron-down.svg", `Pull (fast-forward only)${s.behind ? ` · ${s.behind} behind` : ""}`, (cx) => this.pull(cx), t, s.behind ? div().child(String(s.behind)) : null))
-        .child(this.icon("g-push", "mods/workspace-chrome/chevron-right.svg", s.upstream ? `Push to ${s.upstream}${s.ahead ? ` · ${s.ahead} ahead` : ""}` : "Publish branch to origin", (cx) => this.push(cx), t, s.ahead ? div().child(String(s.ahead)) : !s.upstream ? div().child("publish") : null)));
+        .child(this.icon("g-fetch", "mods/ide-explorer/icons/fetch.svg", "Fetch all remotes", (cx) => this.fetch(cx), t))
+        .child(this.icon("g-pull", "mods/ide-explorer/icons/pull.svg", `Pull (fast-forward only)${s.behind ? ` · ${s.behind} behind` : ""}`, (cx) => this.pull(cx), t, s.behind ? div().child(String(s.behind)) : null))
+        .child(this.icon("g-push", "mods/ide-explorer/icons/push.svg", s.upstream ? `Push to ${s.upstream}${s.ahead ? ` · ${s.ahead} ahead` : ""}` : "Publish branch to origin", (cx) => this.push(cx), t, s.ahead ? div().child(String(s.ahead)) : !s.upstream ? div().child("publish") : null)));
     if (!p) return v_flex().size_full().bg(t.chrome).text_color(t.dim).child(head).child(div().p(14).child("No project folder"));
     if (s && !s.repo) return v_flex().size_full().bg(t.chrome).text_color(t.dim).text_size(12.5).child(head)
       .child(v_flex().p(14).gap(10).child(div().child(`${p.name} is not a git repository.`))
@@ -294,7 +354,7 @@ export default class Git extends View {
         .child(svg("mods/files/chevron-down.svg").size(10).flex_none().text_color(t.dim)))
       .child(h_flex().id("g-worktree").flex_none().h(26).px(8).gap(5).items_center().rounded(6).border_1().border_color(t.border).cursor_pointer().hover((x) => x.bg(t.hover))
         .tooltip("Switch worktree (stays in this space)").on_click(() => openOverlay({ mod: "ide-worktrees", kind: "popup", width: 520, height: 460 }))
-        .child(svg("mods/workspace-chrome/layers.svg").size(13).text_color(t.muted)).child(div().text_size(11.5).text_color(t.muted).child("worktree")));
+        .child(svg("mods/ide-explorer/icons/worktree.svg").size(13).text_color(t.muted)).child(div().text_size(11.5).text_color(t.muted).child("worktree")));
 
     const canCommit = Boolean(this.message.trim()) && !this.busy && (s.staged.length || s.changes.length);
     const commitBox = v_flex().px(10).pb(8).gap(6).flex_none()
@@ -305,23 +365,23 @@ export default class Git extends View {
         .child(div().id("g-commit").flex_1().h(28).flex().items_center().justify_center().rounded(6).text_size(12).font_medium()
           .bg(canCommit ? t.solid : t.raised).text_color(canCommit ? t.solid_foreground : t.dim).when(Boolean(canCommit), (e) => e.cursor_pointer())
           .on_click((_e, cx) => this.commit(cx, false))
-          .child(this.busy ? `${this.busy}…` : s.staged.length ? `Commit ${s.staged.length} staged` : `Commit all (${s.changes.length})`))
+          .child(this.busy ? `${this.busy}…` : s.staged.length ? `Commit ${s.staged.length} staged` : s.changes.length ? `Commit all (${s.changes.length})` : "Nothing to commit"))
         .child(div().id("g-amend").h(28).px(10).flex().items_center().rounded(6).text_size(11.5).bg(t.raised).text_color(t.muted).cursor_pointer().hover((x) => x.text_color(t.foreground))
           .tooltip("Amend the last commit (with this message, or keep its message)").on_click((_e, cx) => this.commit(cx, true)).child("Amend")));
 
-    const rows = [];
+    const rows = this.turnRows(t, s);
     if (s.staged.length) {
       rows.push(this.section("staged", "STAGED", s.staged.length, t, [this.icon("g-unstage-all", "mods/workspace-chrome/minus.svg", "Unstage all", (cx) => this.unstage(s.staged.map((f) => f.path), cx), t)]));
       if (this.sections.staged) for (const f of s.staged) rows.push(this.fileRow(f, `st-${f.path}`, t, (e, cx) => this.openDiff(f, "", cx, e.click_count < 2), [
-        this.icon(`st-open-${f.path}`, "mods/workspace-chrome/file-text.svg", "Open file", () => openInEditor({ path: `${s.top}/${f.path}`, on: p.on, rel: f.path }), t),
+        this.icon(`st-open-${f.path}`, "mods/ide-explorer/icons/open-file.svg", "Open file", () => openInEditor({ path: `${s.top}/${f.path}`, on: p.on, rel: f.path }), t),
         this.icon(`st-un-${f.path}`, "mods/workspace-chrome/minus.svg", "Unstage", (cx) => this.unstage([f.path], cx), t),
       ]));
     }
     rows.push(this.section("changes", "CHANGES", s.changes.length, t, s.changes.length ? [this.icon("g-stage-all", "mods/workspace-chrome/plus.svg", "Stage all", (cx) => this.stage(s.changes.map((f) => f.path), cx), t)] : []));
     if (this.sections.changes) {
       for (const f of s.changes) rows.push(this.fileRow(f, `ch-${f.path}`, t, (e, cx) => this.openDiff(f, "", cx, e.click_count < 2), [
-        this.icon(`ch-open-${f.path}`, "mods/workspace-chrome/file-text.svg", "Open file", () => openInEditor({ path: `${s.top}/${f.path}`, on: p.on, rel: f.path }), t),
-        !f.conflict && this.icon(`ch-dis-${f.path}`, "mods/workspace-chrome/archive.svg", "Discard changes", () => this.discard(f), t),
+        this.icon(`ch-open-${f.path}`, "mods/ide-explorer/icons/open-file.svg", "Open file", () => openInEditor({ path: `${s.top}/${f.path}`, on: p.on, rel: f.path }), t),
+        !f.conflict && !(p.on && f.fresh) && this.icon(`ch-dis-${f.path}`, "mods/ide-explorer/icons/discard.svg", "Discard changes", () => this.discard(f), t),
         this.icon(`ch-st-${f.path}`, "mods/workspace-chrome/plus.svg", "Stage", (cx) => this.stage([f.path], cx), t),
       ].filter(Boolean)));
       if (!s.changes.length) rows.push(div().pl(26).py(4).text_size(11.5).text_color(t.dim).child("Working tree clean"));
@@ -338,7 +398,7 @@ export default class Git extends View {
           .child(div().text_color(t.ansi2).child(`+${s.branchFiles.reduce((n, f) => n + (f.add ?? 0), 0)}`))
           .child(div().text_color(t.ansi1).child(`−${s.branchFiles.reduce((n, f) => n + (f.del ?? 0), 0)}`)));
         for (const f of s.branchFiles) rows.push(this.fileRow(f, `br-${f.path}`, t, (e, cx) => this.openDiff(f, `base:${s.base}`, cx, e.click_count < 2), [
-          this.icon(`br-open-${f.path}`, "mods/workspace-chrome/file-text.svg", "Open file", () => openInEditor({ path: `${s.top}/${f.path}`, on: p.on, rel: f.path }), t),
+          this.icon(`br-open-${f.path}`, "mods/ide-explorer/icons/open-file.svg", "Open file", () => openInEditor({ path: `${s.top}/${f.path}`, on: p.on, rel: f.path }), t),
         ]));
       }
     }
@@ -358,12 +418,12 @@ export default class Git extends View {
             .child(div().truncate().text_size(10.5).text_color(t.dim).child(`${c.short} · ${c.author} · ${c.when}`))));
         if (open) for (const f of this.commitFiles[c.sha] ?? []) rows.push(this.fileRow(f, `cf-${c.sha}-${f.path}`, t, (e, cx) => this.openDiff(f, `commit:${c.sha}`, cx, e.click_count < 2), [], 1));
       }
-      if (!this.commits.length) rows.push(div().pl(26).py(4).text_size(11.5).text_color(t.dim).child("Loading…"));
+      if (!this.commits.length) rows.push(div().pl(26).py(4).text_size(11.5).text_color(t.dim).child(this.historyLoaded ? (s.hasHead ? "No history" : "No commits yet") : "Loading…"));
     }
 
     return v_flex().id("ide-git").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.5)
       .child(head).child(pickers).child(commitBox)
-      .when(Boolean(this.note), (e) => e.child(div().px(12).pb(6).text_size(11).text_color(t.ansi1).child(this.note)))
+      .when(Boolean(this.note || this.error), (e) => e.child(div().px(12).pb(6).text_size(11).text_color(t.ansi1).child(this.note || this.error)))
       .child(v_flex().id("g-list").flex_1().min_h(0).overflow_y_scrollbar().pb(10).border_t(1).border_color(t.border).children(rows));
   }
 }

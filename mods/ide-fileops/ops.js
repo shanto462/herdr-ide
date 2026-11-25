@@ -1,7 +1,7 @@
 // The file system actions behind the Files panel. `exec` is passed in, and names
 // only ever travel as arguments, so a quote or space in a filename stays harmless.
 const sh = async (exec, on, script, ...args) => {
-  const r = await exec("sh", ["-c", script, "trio", ...args], { on });
+  const r = await exec("sh", ["-c", script, "ide", ...args], { on });
   if (r.code !== 0) throw new Error((r.stderr || "That did not work").trim());
   return r.stdout;
 };
@@ -46,8 +46,14 @@ done
 cp -R -- "$1" "$t" && printf %s "\${t##*/}"`, from, folder);
 }
 
-// To the system Trash, so a mistake can be undone from Finder.
-export async function trash(exec, path) {
+// To the system Trash, so a mistake can be undone from Finder. On another machine
+// there is no Finder Trash: the file goes to ~/.Trash there instead.
+export async function trash(exec, path, on = null) {
+  if (on) {
+    const r = await exec("sh", ["-c", 'mkdir -p "$HOME/.Trash" && mv -- "$1" "$HOME/.Trash/$(basename -- "$1").$(date +%s)"', "ide", path], { on });
+    if (r.code !== 0) throw new Error("Could not move this to the Trash");
+    return;
+  }
   const r = await exec("/usr/bin/trash", [path]);
   if (r.code !== 0) throw new Error("Could not move this to the Trash");
 }
@@ -62,5 +68,5 @@ export async function discard(exec, root, rel, isNew, hasHead, on) {
   if (!isNew) return git("restore", "--source=HEAD", "--staged", "--worktree", "--", rel);
   // Unstage first: a staged new file would otherwise show as deleted once it is gone.
   await exec("git", ["--literal-pathspecs", "rm", "--cached", "-f", "-q", "--ignore-unmatch", "--", rel], { cwd: root, on });
-  await trash(exec, `${root}/${rel}`);
+  await trash(exec, `${root}/${rel}`, on);
 }
