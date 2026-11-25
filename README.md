@@ -22,6 +22,7 @@ A Zed-style IDE layout for [Herdr](https://herdr.dev): one tab strip for termina
   - Revert single hunks in branch and agent-turn diffs.
 - **Branch picker** to switch, create, or compare against a branch.
 - **Worktree picker** to switch, create or remove worktrees. It re-roots the IDE, not your space.
+- **Space switcher:** the project button in the title bar opens a searchable list of spaces; the sidebar stays on whatever view you had open.
 - **Agent-turn review.** When an agent finishes working, the Git panel lists the files that turn changed. You can open each change as a diff, or revert one file or the whole turn.
 - **Home tab in every space.** Closing every other tab never closes the space, and a new space (⌘N) starts with nothing running.
 - **Search and navigation:**

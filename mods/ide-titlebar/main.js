@@ -49,7 +49,7 @@ export default class Titlebar extends View {
     return h_flex().id("ide-titlebar").size_full().min_w(0).pl(lights).pr(8).gap(2).items_center().text_size(12.8)
       .child(group("tb-left-group", [
         chip("tb-project", [div().font_semibold().max_w(220).truncate().child(p?.name ?? space?.name ?? "No project"), svg("mods/files/chevron-down.svg").size(10).text_color(t.dim)],
-        p ? `${p.path}\nSpaces and projects` : "Spaces", () => { run("layout.select", { stack: "sidebar", child: "view-spaces" }); run("layout.show", { id: "sidebar" }); }, true),
+        p ? `${p.path}\nSwitch space` : "Switch space", () => openOverlay({ mod: "ide-spaces", kind: "popup", width: 500, height: 470 }), true),
         scm?.branch ? chip("tb-branch", [
         svg("mods/workspace-chrome/git-branch.svg").size(13).text_color(t.accent),
         div().max_w(260).truncate().child(scm.branch),

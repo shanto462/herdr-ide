@@ -27,6 +27,7 @@ function commands() {
     ["Search in files", "⌘⇧F", () => { view("view-search")(); setShared(FIND_FOCUS, Date.now()); }],
     ["Show Explorer", "⌘⇧E", view("view-explorer")],
     ["Show Git", "⌘⇧G", view("view-git")],
+    ["Switch space…", "", popup("ide-spaces", 500, 470)],
     ["Show Spaces", "", view("view-spaces")],
     ["Show Agents", "", view("view-agents")],
     ["Toggle sidebar", "⌘B", () => run("layout.toggle", { id: "sidebar" })],
