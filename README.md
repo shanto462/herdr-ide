@@ -18,6 +18,8 @@ A Zed-style IDE layout for [Herdr](https://herdr.dev): one tab strip for termina
   - **Branch diff vs a base branch.**
   - History with per-commit files.
   - Every diff opens as a tab.
+  - **Hunk staging:** stage, unstage or discard single hunks, with an Unstaged/Staged switch on each file's diff.
+  - Revert single hunks in branch and agent-turn diffs.
 - **Branch picker** to switch, create, or compare against a branch.
 - **Worktree picker** to switch, create or remove worktrees. It re-roots the IDE, not your space.
 - **Agent-turn review.** When an agent finishes working, the Git panel lists the files that turn changed. You can open each change as a diff, or revert one file or the whole turn.
@@ -28,6 +30,10 @@ A Zed-style IDE layout for [Herdr](https://herdr.dev): one tab strip for termina
   - An IDE command palette (⌘⇧P).
   - ⌘-click on `path:line` in any terminal.
   - Ln/Col in the status bar.
+- **Find and replace in a file:**
+  - ⌘F to find, ⌥⌘F to replace.
+  - Match case, whole word and regex.
+  - Replace all is a single undo step.
 
 ## Install
 

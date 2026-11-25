@@ -4,7 +4,7 @@
 // descriptor plus its uid. Unsaved edits are kept as drafts on disk, so closing the
 // tab or Herdr never loses them.
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, v_virtual_list } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, v_virtual_list, InputState, Input } from "gpui-base";
 import * as fs from "fs/promises";
 import { props, shared, setShared, exec, notify, openOverlay, appHome, readTextFile, writeTextFile, nextCommand, theme, settings, checking, run, spaces, panes, focused } from "herdr";
 import { FS, CMD, FILETABS, DIRTY, GOTO, CURSOR, activeSpace, project, relTo, openInEditor, closeTab } from "./common.js";
@@ -74,10 +74,10 @@ function parseCsv(text, sep) {
 const idOf = (d) => `${d.kind ?? "file"}|${d.on ?? ""}|${d.path}|${d.kind === "diff" ? d.ref ?? "" : ""}`;
 
 function diffRows(lines) {
-  let old = 0, next = 0;
+  let old = 0, next = 0, hunk = -1;
   return lines.map((line) => {
     const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
-    if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
+    if (match) { old = +match[1]; next = +match[2]; hunk++; return { kind: "@", text: line, hunk }; }
     const kind = line[0];
     if (kind === "-") return { kind, a: old++, text: line.slice(1) || " " };
     if (kind === "+") return { kind, b: next++, text: line.slice(1) || " " };
@@ -95,6 +95,12 @@ export default class IdeEditor extends View {
     if (p.line) { this.b.line = p.line; this.b.column = p.column ?? 1; }
     this.lastFs = shared(FS)?.at; this.lastGoto = shared(GOTO)?.at; this.lastCmd = shared(CMD)?.at;
     this.dirtyShared = null;
+    this.find = { open: false, replaceOpen: false, caseSensitive: false, word: false, regex: false, matches: [], at: -1 };
+    this.find.input = InputState.new({ placeholder: "Find" });
+    this.find.replace = InputState.new({ placeholder: "Replace" });
+    this.find.input.on("change", (_e, cx) => { this.findMatches(cx); this.showMatch(); cx.notify(); });
+    this.find.input.on("submit", (_e, cx) => this.step(1, cx));
+    this.find.replace.on("submit", (_e, cx) => this.replaceOne(cx));
     if (checking()) return;
     cx.timer.every(120, (cx) => this.tick(cx));
     cx.timer.every(1000, (cx) => this.flush(cx));
@@ -144,6 +150,8 @@ export default class IdeEditor extends View {
     else if (c === "preview") { if (b.markdown) { b.mdPreview = !b.mdPreview; b.view++; } }
     else if (c === "focus") { if (b.code) b.code.focus(); }
     else if (c === "reveal") { if (!b.on) exec("open", ["-R", b.path]); }
+    else if (c === "find") this.openFind(false, cx);
+    else if (c === "find_replace") this.openFind(true, cx);
     else if (c === "goto_line") openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } });
     // From the unsaved-close prompt.
     else if (c === "save_close") { this.closeAfterSave = true; this.save(b, cx); }
@@ -380,10 +388,22 @@ export default class IdeEditor extends View {
             lines = [`@@ -0,0 +1,${body.length} @@ new file`, ...body.map((l) => `+${l}`)];
           }
         } else {
-          const r = await exec("git", [...READ, "diff", "HEAD", "--no-ext-diff", "--no-textconv", "--no-color", "--", rel], { cwd: root, on });
+          // Unstaged (index → working tree) or staged (HEAD → index): hunks act on one side.
+          const diff = (cached) => exec("git", [...READ, "diff", ...(cached ? ["--cached"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", rel], { cwd: root, on });
+          const [unstaged, staged] = await Promise.all([diff(false), diff(true)]);
+          const count = (r) => r.stdout.split("\n").filter((l) => /^[+-](?![+-]{2} )/.test(l)).length;
+          b.sides = { unstaged: count(unstaged), staged: count(staged) };
+          if (!b.side) b.side = !b.sides.unstaged && b.sides.staged ? "staged" : "unstaged";
+          const r = b.side === "staged" ? staged : unstaged;
           const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
-          lines = first < 0 ? [r.stdout.includes("Binary") ? "Binary file changed" : "No changes against HEAD"] : all.slice(first);
+          b.patchable = first >= 0 && !b.on;
+          lines = first < 0 ? [r.stdout.includes("Binary") ? "Binary file changed" : b.side === "staged" ? "Nothing staged in this file" : "No unstaged changes in this file"] : all.slice(first);
+          b.diffHeader = first < 0 ? [] : all.slice(0, first);
+          this.setDiff(b, lines, cx);
+          b.state = "ready"; b.error = null;
+          return;
         }
+        b.patchable = false; b.untracked = tracked.code !== 0;
         this.setDiff(b, lines, cx);
         b.state = "ready"; b.error = null;
       } catch (e) { b.error = String(e.message ?? e); b.state = "ready"; cx.notify(); }
@@ -406,6 +426,9 @@ export default class IdeEditor extends View {
       const r = await exec("git", [...READ, ...args], { cwd: root, on });
       if (r.code !== 0) throw new Error(r.stderr.trim());
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
+      // Branch and agent-turn diffs end at the working tree, so a hunk can be reverted there.
+      b.patchable = first >= 0 && !b.on && !b.ref.startsWith("commit:");
+      b.diffHeader = first < 0 ? [] : all.slice(0, first);
       this.setDiff(b, first < 0 ? [r.stdout.includes("Binary") ? "Binary file changed" : "No differences"] : all.slice(first), cx);
       b.state = "ready"; b.error = null;
     } catch (e) { b.error = String(e.message ?? e); b.state = "ready"; cx.notify(); }
@@ -414,8 +437,10 @@ export default class IdeEditor extends View {
 
   setDiff(b, lines, cx) {
     {
+        if (lines.length > 6000 || lines.some((l) => l.length > 2000)) b.patchable = false; // a cut line would corrupt a patch
         lines = lines.slice(0, 6000).map((l) => (l.length > 2000 ? l.slice(0, 2000) + "…" : l));
-        const key = lines.join("\n");
+        b.rawLines = lines;
+        const key = (b.side ?? "") + lines.join("\n");
         if (key !== b.diffKey) {
           b.diffKey = key;
           b.rows = diffRows(lines);
@@ -428,8 +453,165 @@ export default class IdeEditor extends View {
     }
   }
 
+  // ---------- hunks ----------
+
+  // One hunk as a patch: the file's diff header plus that hunk's lines.
+  hunkPatch(b, hunk) {
+    const start = b.rows.findIndex((r) => r.kind === "@" && r.hunk === hunk);
+    let end = b.rows.findIndex((r, i) => i > start && r.kind === "@");
+    if (end < 0) end = b.rows.length;
+    return [...b.diffHeader, ...b.rawLines.slice(start, end)].join("\n") + "\n";
+  }
+
+  // stage: index += hunk · unstage: index −= hunk · discard / revert: working tree −= hunk.
+  applyHunk(b, hunk, mode, cx) {
+    if (b.hunkBusy) return;
+    if ((mode === "discard" || mode === "revert") && b.confirmHunk !== hunk) { b.confirmHunk = hunk; cx.notify(); return; }
+    b.confirmHunk = null; b.hunkBusy = true; b.hunkError = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const patch = `${appHome()}/data/ide-hunk-${Date.now()}.patch`;
+      try {
+        const root = b.root ?? project()?.path;
+        const top = (await exec("git", ["rev-parse", "--show-toplevel"], { cwd: root })).stdout.trim();
+        await writeTextFile(patch, this.hunkPatch(b, hunk), null);
+        const flags = mode === "stage" ? ["--cached"] : mode === "unstage" ? ["--cached", "-R"] : ["-R"];
+        const r = await exec("git", ["apply", ...flags, "--whitespace=nowarn", patch], { cwd: top });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(0, 3).join(" "));
+        b.state = "stale";
+      } catch (e) { b.hunkError = `${mode} failed: ${String(e.message ?? e)}`; }
+      finally { b.hunkBusy = false; fs.unlink(patch).catch(() => {}); cx.notify(); }
+    });
+  }
+
+  stageFile(b, add, cx) {
+    const root = b.root ?? project()?.path, rel = b.rel ?? relTo(root, b.path);
+    cx.spawn(async (cx) => {
+      const r = await exec("git", add ? ["add", "--", rel] : ["restore", "--staged", "--", rel], { cwd: root, on: b.on });
+      if (r.code !== 0) b.hunkError = (r.stderr || r.stdout).trim(); else { b.state = "stale"; b.side = null; }
+      cx.notify();
+    });
+  }
+
+  // ---------- find / replace ----------
+
+  openFind(replace, cx) {
+    const b = this.b;
+    if (!b.code || b.viewer && b.viewer !== "text") return;
+    if (b.markdown && b.mdPreview) { b.mdPreview = false; b.view++; }
+    const f = this.find;
+    f.open = true; f.replaceOpen = replace || f.replaceOpen;
+    const sel = b.code.selected_range(), picked = b.code.value().slice(sel.start, sel.end);
+    if (picked && !picked.includes("\n") && picked.length < 200) { f.input.set_value(picked); }
+    this.findMatches(cx);
+    f.input.focus();
+    cx.notify();
+  }
+
+  closeFind(cx) { this.find.open = false; this.b.code?.focus(); cx.notify(); }
+
+  findRegex(global = true) {
+    const f = this.find, q = f.input.value();
+    if (!q) return null;
+    let src = f.regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (f.word) src = `\\b(?:${src})\\b`;
+    return new RegExp(src, (global ? "g" : "") + (f.caseSensitive ? "" : "i") + "m");
+  }
+
+  findMatches(cx, keepAt = false) {
+    const f = this.find, b = this.b;
+    f.matches = []; f.error = null;
+    if (!b.code) return;
+    let re;
+    try { re = this.findRegex(); } catch { f.error = "Invalid regular expression"; return; }
+    if (!re) { f.at = -1; return; }
+    const text = b.code.value();
+    for (let m; (m = re.exec(text)) && f.matches.length < 10000;) {
+      if (m[0] === "") { re.lastIndex++; continue; }
+      f.matches.push({ start: m.index, end: m.index + m[0].length });
+    }
+    if (!keepAt) {
+      const from = b.code.selected_range().start;
+      f.at = f.matches.findIndex((x) => x.start >= from);
+      if (f.at < 0) f.at = f.matches.length ? 0 : -1;
+    } else if (f.at >= f.matches.length) f.at = f.matches.length - 1;
+  }
+
+  // Selecting the match is what shows it: the editor scrolls to its selection.
+  showMatch() {
+    const f = this.find, m = f.matches[f.at];
+    if (m) try { this.b.code.set_selected_range({ start: m.start, end: m.end }); } catch {}
+  }
+
+  step(delta, cx) {
+    const f = this.find;
+    if (!f.matches.length) return;
+    f.at = (f.at + delta + f.matches.length) % f.matches.length;
+    this.showMatch();
+    cx.notify();
+  }
+
+  replaceOne(cx) {
+    const f = this.find, b = this.b, m = f.matches[f.at];
+    if (!m || !b.editable) return;
+    const text = b.code.value().slice(m.start, m.end), re = this.findRegex(false);
+    b.code.set_selected_range({ start: m.start, end: m.end });
+    b.code.replace(f.regex ? text.replace(re, f.replace.value()) : f.replace.value());
+    this.findMatches(cx, true);
+    this.showMatch();
+    cx.notify();
+  }
+
+  replaceAll(cx) {
+    const f = this.find, b = this.b;
+    if (!f.matches.length || !b.editable) return;
+    const re = this.findRegex(), text = b.code.value(), n = f.matches.length;
+    const next = f.regex ? text.replace(re, f.replace.value()) : text.replace(re, () => f.replace.value());
+    b.code.set_selected_range({ start: 0, end: text.length });
+    b.code.replace(next); // one undo step
+    this.findMatches(cx);
+    f.note = `Replaced ${n}`;
+    cx.notify();
+  }
+
+  findBar(t) {
+    const f = this.find, b = this.b;
+    const toggle = (id, label, key, tip) => div().id(id).h(22).px(5).flex().items_center().rounded(4).cursor_pointer().text_size(11).font_semibold().tooltip(tip)
+      .bg(f[key] ? t.accent + "33" : t.background).text_color(f[key] ? t.foreground : t.dim).border_1().border_color(f[key] ? t.accent : t.border)
+      .on_click((_e, cx) => { f[key] = !f[key]; this.findMatches(cx); this.showMatch(); cx.notify(); }).child(label);
+    const field = (state, id, w) => div().id(id).w(w).h(26).px(8).flex().items_center().rounded(5).border_1().border_color(t.input).bg(t.background).cursor_text()
+      .child(Input.new(state).flex_1().h_full().text_size(12.5).text_color(t.foreground));
+    const count = f.error ? f.error : !f.input.value() ? "" : f.matches.length ? `${f.at + 1} of ${f.matches.length}${f.matches.length >= 10000 ? "+" : ""}` : "No results";
+    return v_flex().flex_none().px(10).py(6).gap(6).border_b(1).border_color(t.border).bg(t.chrome).text_size(12)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") this.closeFind(cx);
+        else if (e.key === "enter" && e.modifiers?.shift) this.step(-1, cx);
+        else return;
+        cx.stop_propagation();
+      })
+      .child(h_flex().gap(6).items_center()
+        .child(div().id("fb-expand").size(22).flex().items_center().justify_center().rounded(4).cursor_pointer().text_color(t.dim).hover((s) => s.bg(t.hover))
+          .tooltip("Toggle replace (⌥⌘F)").on_click((_e, cx) => { f.replaceOpen = !f.replaceOpen; cx.notify(); })
+          .child(svg(`mods/files/chevron-${f.replaceOpen ? "down" : "right"}.svg`).size(11)))
+        .child(field(f.input, "fb-find", 280))
+        .child(toggle("fb-case", "Aa", "caseSensitive", "Match case")).child(toggle("fb-word", "ab", "word", "Whole word")).child(toggle("fb-re", ".*", "regex", "Regular expression"))
+        .child(div().min_w(80).text_color(f.error || (f.input.value() && !f.matches.length) ? t.ansi1 : t.dim).child(count))
+        .child(this.button("fb-prev", "↑", false, (cx) => this.step(-1, cx), t))
+        .child(this.button("fb-next", "↓", false, (cx) => this.step(1, cx), t))
+        .child(div().flex_1())
+        .child(div().id("fb-close").size(22).flex().items_center().justify_center().rounded(4).cursor_pointer().text_color(t.dim).hover((s) => s.bg(t.hover)).tooltip("Close (Esc)")
+          .on_click((_e, cx) => this.closeFind(cx)).child(svg("mods/pane/close.svg").size(11))))
+      .when(Boolean(f.replaceOpen), (e) => e.child(h_flex().gap(6).items_center().pl(28)
+        .child(field(f.replace, "fb-replace", 280))
+        .child(this.button("fb-r1", "Replace", false, (cx) => this.replaceOne(cx), t))
+        .child(this.button("fb-ra", "Replace all", true, (cx) => this.replaceAll(cx), t))
+        .when(!b.editable, (x) => x.child(div().text_color(t.dim).child("read-only")))
+        .when(Boolean(f.note), (x) => x.child(div().text_color(t.dim).child(f.note)))));
+  }
+
   edited(b, cx) {
     b.rowsCsv = null;
+    if (this.find?.open) { this.findMatches(cx, true); this.find.note = null; }
     const dirty = b.code.value() !== b.disk;
     b.draftStale = dirty;
     if (b.preview) { b.preview = false; cx.notify(); }
@@ -516,6 +698,13 @@ export default class IdeEditor extends View {
       .when(b.kind === "diff", (e) => e.child(div().ml(8).text_color(t.ansi2).child(`+${b.add ?? 0}`)).child(div().text_color(t.ansi1).child(`−${b.del ?? 0}`)))
       .child(div().flex_1())
       .when(Boolean(status), (e) => e.child(div().text_color(b.dirty ? t.blocked : t.dim).child(status)))
+      .when(b.kind === "diff" && !b.ref && Boolean(b.sides), (e) => e.child(h_flex().rounded(5).border_1().border_color(t.border).overflow_hidden()
+        .children(["unstaged", "staged"].map((side) => div().id(`ed-side-${side}`).h(20).px(8).flex().items_center().cursor_pointer().text_size(11.5)
+          .bg(b.side === side ? t.selected : t.background).text_color(b.side === side ? t.foreground : t.dim).hover((x) => x.bg(t.hover))
+          .on_click((_e, cx) => { if (b.side !== side) { b.side = side; b.state = "stale"; cx.notify(); } })
+          .child(`${side === "staged" ? "Staged" : "Unstaged"} ${b.sides[side]}`)))))
+      .when(b.kind === "diff" && !b.ref && (b.side === "unstaged" && (b.sides?.unstaged || b.untracked)), (e) => e.child(this.button("ed-stage-file", "Stage file", false, (cx) => this.stageFile(b, true, cx), t)))
+      .when(b.kind === "diff" && !b.ref && b.side === "staged" && Boolean(b.sides?.staged), (e) => e.child(this.button("ed-unstage-file", "Unstage file", false, (cx) => this.stageFile(b, false, cx), t)))
       .when(b.kind === "diff", (e) => e.child(this.button("ed-openfile", "Open file", false, (cx) => openInEditor({ kind: "file", path: b.path, on: b.on, rel: b.rel }), t)))
       .when(Boolean(b.csv) && !b.table, (e) => e.child(this.button("ed-csv", "Table", false, (cx) => { b.table = true; b.rowsCsv = null; b.view++; cx.notify(); }, t)))
       .when(Boolean(b.markdown), (e) => e.child(this.button("ed-md", b.mdPreview ? "Edit" : "Preview", false, (cx) => { b.mdPreview = !b.mdPreview; b.sectionAt = 0; b.view++; cx.notify(); }, t)))
@@ -539,9 +728,28 @@ export default class IdeEditor extends View {
       .child(div().whitespace_nowrap().child(r.text));
   }
 
+  hunkHeader(b, r, mode, t) {
+    const confirm = b.confirmHunk === r.hunk;
+    const act = (id, label, m, kind) => div().id(`${id}-${r.hunk}`).h(18).px(7).flex().items_center().rounded(4).cursor_pointer().text_size(11).font_family(settings().ui_font ?? "Geist")
+      .bg(kind === "primary" ? t.solid : t.background).text_color(kind === "primary" ? t.solid_foreground : kind === "danger" ? t.ansi1 : t.foreground)
+      .border_1().border_color(kind === "primary" ? t.solid : t.border).hover((x) => x.opacity(0.85))
+      .on_click((_e, cx) => this.applyHunk(b, r.hunk, m, cx)).child(label);
+    return h_flex().w_full().h(24).flex_none().px(12).gap(6).items_center().bg(t.raised).text_color(t.dim)
+      .child(div().flex_1().min_w(0).truncate().child(r.text))
+      .when(b.hunkBusy, (e) => e.child(div().text_size(11).child("…")))
+      .when(mode === "stage", (e) => e.child(act("hk-discard", confirm ? "Confirm discard" : "Discard", "discard", "danger")).child(act("hk-stage", "Stage hunk", "stage", "primary")))
+      .when(mode === "unstage", (e) => e.child(act("hk-unstage", "Unstage hunk", "unstage", "plain")))
+      .when(mode === "revert", (e) => e.child(act("hk-revert", confirm ? "Confirm revert" : "Revert hunk", "revert", "danger")));
+  }
+
   body(b, t) {
     if (b.kind === "diff") {
       if (!b.rows) return div().p(16).text_color(t.dim).child(b.error ?? "Loading changes…");
+      if (b.rows.length <= 2500) {
+        const mode = !b.patchable ? null : b.ref ? "revert" : b.side === "staged" ? "unstage" : "stage";
+        return div().id(`ed-diff-${b.view}`).flex_1().min_h(0).overflow_scroll().font_family(settings().font_family ?? "JetBrains Mono").text_size(12.5)
+          .child(v_flex().min_w(b.diffWidth).children(b.rows.map((r, i) => r.kind === "@" && mode ? this.hunkHeader(b, r, mode, t) : this.diffRow(r, t))));
+      }
       return div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(12.5)
         .child(div().id(`ed-diff-x-${b.view}`).size_full().overflow_x_scrollbar()
           .child(div().w_full().min_w(b.diffWidth).h_full().child(v_virtual_list(`ed-diff-${b.view}`, b.rows.length, 20, (i) => String(i),
@@ -609,6 +817,8 @@ export default class IdeEditor extends View {
       .child(this.breadcrumb(b, t))
       .when(Boolean(b.code && b.changed), (e) => e.child(this.banner(b, t)))
       .when(Boolean(b.saveError) && !b.changed, (e) => e.child(div().px(14).py(6).flex_none().text_size(12).bg(t.raised).text_color(t.ansi1).child(b.saveError)))
+      .when(Boolean(this.find.open && b.code), (e) => e.child(this.findBar(t)))
+      .when(Boolean(b.hunkError), (e) => e.child(div().px(14).py(6).flex_none().text_size(12).bg(t.raised).text_color(t.ansi1).child(b.hunkError)))
       .child(b.path ? this.body(b, t) : div().p(16).text_color(t.dim).child("No file"));
   }
 }

@@ -34,6 +34,8 @@ Top to bottom:
   - Unsaved edits are kept as drafts under `data/ide-drafts`, so closing the tab or Herdr loses nothing.
   - Markdown has an Edit/Preview toggle, and CSV/TSV show as a table.
   - Images show inline. PDFs render every page (`pdftoppm`) and re-render when the PDF changes. Office and Keynote files get a Quick Look thumbnail, and non-UTF-8 text is shown read-only.
+- **Hunks:** a working-changes diff tab has an Unstaged / Staged switch and Stage file / Unstage file buttons. Each `@@` header has Stage hunk and Discard (unstaged side), or Unstage hunk (staged side). Branch and agent-turn diffs have Revert hunk. Discard and revert need a second click to confirm. A hunk is applied as a one-hunk patch (the file's diff header plus that hunk) with `git apply [--cached] [-R]` at the repo top. Diffs over 2,500 lines, or with lines cut at 2,000 characters, show no hunk actions.
+- **Find / replace (⌘F, ⌥⌘F in an editor):** a bar under the breadcrumb with the match count, ↑/↓, Enter and ⇧Enter, match case / whole word / regex (with `$1` groups), Replace, and Replace all as one undo step. The current match is shown by selecting it.
 - **Diff tabs:** working tree vs HEAD, vs the merge-base with a base branch (`name ↔ main`), or one commit (`name @abc1234`).
 - **Explorer:**
   - Git marks on files and folders; ignored files are dimmed.

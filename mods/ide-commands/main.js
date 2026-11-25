@@ -30,6 +30,8 @@ function commands() {
     ["Show Spaces", "", view("view-spaces")],
     ["Show Agents", "", view("view-agents")],
     ["Toggle sidebar", "⌘B", () => run("layout.toggle", { id: "sidebar" })],
+    ["Find in file", "⌘F", () => editorCommand("find", a.uid), !file],
+    ["Replace in file", "⌥⌘F", () => editorCommand("find_replace", a.uid), !file],
     ["Save file", "⌘S", () => editorCommand("save", a.uid), !a?.dirty],
     ["Revert file", "", () => editorCommand("revert", a.uid), !a?.dirty],
     ["Toggle Markdown preview", "", () => editorCommand("preview", a.uid), !/\.(md|markdown)$/i.test(file?.path ?? "")],

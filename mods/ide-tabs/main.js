@@ -132,8 +132,12 @@ export default class Tabs extends View {
 
   // Every space keeps a Home tab, last in order: closing all other tabs never closes it.
   ensureHomes(cx) {
+    if (this.starting) return; // a space being opened gets its Home from restore()
     for (const space of spaces()) {
-      const home = this.homeOf(space);
+      const ids = new Set(space.tabs.map((t) => t.id));
+      const homes = [...new Set(panes().filter((p) => p.mod === "ide-home" && ids.has(p.tab)).map((p) => p.tab))];
+      for (const extra of homes.slice(1)) run("tab.close", { id: extra, confirmed: true });
+      const home = homes[0] ?? null;
       if (home) {
         const at = space.tabs.findIndex((t) => t.id === home);
         if (at !== space.tabs.length - 1) run("tab.move", { id: home, index: space.tabs.length });
