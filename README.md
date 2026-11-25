@@ -57,6 +57,7 @@ for m in /tmp/herdr-ide/mods/ide-*; do
 done
 rmdir "$H/mods-incoming"
 cp /tmp/herdr-ide/layouts/ide.json /tmp/herdr-ide/layouts/ide.svg "$H/layouts/"
+cp /tmp/herdr-ide/themes/*.json "$H/themes/"
 for m in "$H"/mods/ide-*; do herdr-app check "$m"; done
 herdr-app do layout.switch '{"name":"ide"}'
 ```
@@ -64,6 +65,10 @@ herdr-app do layout.switch '{"name":"ide"}'
 Then add the `layout:ide` section from [`keys.json`](keys.json) to your `~/.config/herdr-app/keys.json` (⌘P, ⌘S, ⌘⇧E/G/F). `ctrl-shift-l` cycles layouts, so your current one is one key away.
 
 **Your launchers:** edit `mods/ide-tabs/config.js` to add buttons that start your agents (e.g. `claude`, `codex`) as named tabs. Keep that file when you update.
+
+## Liquid glass
+
+The layout blurs the desktop behind the window (`window_blur`) and floats the sidebar and editor as rounded glass panels. The look comes from two translucent themes, `liquid-glass-light` and `liquid-glass-dark`, which follow the system appearance. Any other theme picked in Settings > Look still works; solid themes simply turn the panels opaque. To make terminals fully solid, set `terminal_opacity` to `1` in `layouts/ide.json`.
 
 ## Notes
 

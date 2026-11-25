@@ -72,7 +72,7 @@ export default class Status extends View {
       .text_color(on ? t.foreground : t.dim).when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_mouse_down("left", stop).on_click(action).child(child);
     const badge = (n, color) => div().px(4).rounded(6).bg(color).text_size(9.5).text_color(t.background).child(String(n));
-    return h_flex().id("ide-status").size_full().min_w(0).px(6).gap(2).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.5)
+    return h_flex().id("ide-status").size_full().min_w(0).px(6).gap(2).items_center().text_size(11.5)
       .children(VIEWS.map((v) => {
         const on = sidebar && !sidebar.hidden && sidebar.active === v.child;
         const probs = space ? shared("ide.problems")?.[space.id] : null;

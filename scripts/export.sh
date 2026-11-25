@@ -11,8 +11,9 @@ APP="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 MODS="ide-branches ide-commands ide-home ide-outline ide-problems ide-editor ide-editor-menu ide-explorer ide-fileops ide-find ide-git ide-quickopen ide-status ide-tabs ide-titlebar ide-worktrees"
 
-rm -rf "$REPO/mods" "$REPO/layouts"
-mkdir -p "$REPO/mods" "$REPO/layouts"
+rm -rf "$REPO/mods" "$REPO/layouts" "$REPO/themes"
+mkdir -p "$REPO/mods" "$REPO/layouts" "$REPO/themes"
+cp "$APP/themes/liquid-glass-light.json" "$APP/themes/liquid-glass-dark.json" "$REPO/themes/"
 for m in $MODS; do
   rsync -a --exclude '*.d.ts' --exclude 'jsconfig.json' --exclude '.DS_Store' --exclude '*.error' \
     "$APP/mods/$m/" "$REPO/mods/$m/"
@@ -24,7 +25,7 @@ python3 - "$APP" "$REPO" <<'PY'
 import json, sys
 app, repo = sys.argv[1], sys.argv[2]
 layout = json.load(open(f"{app}/layouts/ide.json"))
-layout.pop("theme", None)          # the person's own theme decides the look
+layout["theme"] = {"light": "liquid-glass-light", "dark": "liquid-glass-dark"}  # shipped in themes/
 layout["traffic_lights"] = [14, 13]  # centered at zoom 1; ide-titlebar re-centers for other zooms
 swap = {"trio-spaces": "spaces", "trio-pane": "pane"}
 def walk(node):

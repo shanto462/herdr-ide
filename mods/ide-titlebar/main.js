@@ -42,7 +42,7 @@ export default class Titlebar extends View {
     };
     const all = agents();
     const working = all.filter((a) => a.status === "working").length, blocked = all.filter((a) => a.status === "blocked").length, done = all.filter((a) => a.status === "done").length;
-    return h_flex().id("ide-titlebar").size_full().min_w(0).pl(lights).pr(8).gap(2).items_center().bg(t.chrome).border_b(1).border_color(t.border).text_size(12.8)
+    return h_flex().id("ide-titlebar").size_full().min_w(0).pl(lights).pr(8).gap(2).items_center().text_size(12.8)
       .child(chip("tb-project", [div().font_semibold().max_w(220).truncate().child(p?.name ?? space?.name ?? "No project"), svg("mods/files/chevron-down.svg").size(10).text_color(t.dim)],
         p ? `${p.path}\nSpaces and projects` : "Spaces", () => { run("layout.select", { stack: "sidebar", child: "view-spaces" }); run("layout.show", { id: "sidebar" }); }, true))
       .when(Boolean(scm?.branch), (e) => e.child(chip("tb-branch", [
