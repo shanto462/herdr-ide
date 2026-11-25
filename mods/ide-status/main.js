@@ -2,7 +2,7 @@
 // hide), then branch and sync state. Right: the file the shown tab holds.
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { theme, layout, run, shared, setShared, agents, openOverlay, checking, nextCommand } from "herdr";
+import { theme, layout, run, shared, setShared, agents, openOverlay, checking, nextCommand, exec } from "herdr";
 import { activeSpace, project, findNode, SCM, ACTIVE, CURSOR } from "./common.js";
 
 const VIEWS = [
@@ -22,16 +22,42 @@ export function showView(child, keep = false) {
 
 export default class Status extends View {
   init(_props, cx) {
+    this.blame = null;
     if (checking()) return;
+    cx.timer.every(700, (cx) => this.updateBlame(cx));
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c === "explorer") showView("view-explorer", true);
+        if (c === "explorer") { showView("view-explorer", true); setShared("ide.explorer.focus", Date.now()); }
         else if (c === "git") showView("view-git", true);
         else if (c === "goto_line") openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } });
         else if (c === "search") { showView("view-search", true); setShared("ide.find.focus", Date.now()); }
         cx.notify();
       }
+    });
+  }
+
+  // Who last changed the cursor's line: "author, 3 days ago · subject".
+  updateBlame(cx) {
+    const space = activeSpace(), a = space ? shared(ACTIVE)?.[space.id] : null, cur = shared(CURSOR);
+    const key = a?.kind === "file" && !a.on && cur?.uid === a.uid ? `${a.path}:${cur.line}:${a.dirty}` : null;
+    if (key === this.blameKey) return;
+    this.blameKey = key;
+    if (!key || a.dirty) { if (this.blame) { this.blame = null; cx.notify(); } return; }
+    const dir = a.path.slice(0, a.path.lastIndexOf("/"));
+    cx.spawn(async (cx) => {
+      const r = await exec("git", ["--no-optional-locks", "blame", "--porcelain", "-L", `${cur.line},${cur.line}`, "--", a.path], { cwd: dir }).catch(() => null);
+      if (this.blameKey !== key) return;
+      if (!r || r.code !== 0) { this.blame = null; cx.notify(); return; }
+      const get = (k) => (new RegExp(`^${k} (.*)$`, "m").exec(r.stdout) ?? [])[1] ?? "";
+      const sha = r.stdout.slice(0, 40);
+      if (/^0{40}$/.test(sha)) this.blame = { text: "Not committed yet", tip: "" };
+      else {
+        const days = Math.round((Date.now() / 1000 - Number(get("author-time"))) / 86400);
+        const when = days < 1 ? "today" : days === 1 ? "yesterday" : days < 60 ? `${days} days ago` : `${Math.round(days / 30)} months ago`;
+        this.blame = { text: `${get("author")}, ${when}`, tip: `${sha.slice(0, 8)} · ${get("author")} · ${get("summary")}` };
+      }
+      cx.notify();
     });
   }
 
@@ -61,6 +87,7 @@ export default class Status extends View {
       .when(Boolean(active), (e) => e
         .child(div().max_w(420).truncate().text_color(t.dim).child(active.rel ?? ""))
         .when(Boolean(active.dirty), (x) => x.child(div().text_color(t.blocked).child("● unsaved")))
+        .when(Boolean(this.blame), (x) => x.child(div().id("s-blame").max_w(320).truncate().px(5).text_color(t.dim).tooltip(this.blame.tip || this.blame.text).child(this.blame.text)))
         .when(Boolean(active.uid) && shared(CURSOR)?.uid === active.uid, (x) => x.child(btn("s-cursor", div().child(`Ln ${shared(CURSOR).line}, Col ${shared(CURSOR).column}`), "Go to line (⌃G)", () => openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } }))))
         .child(div().px(6).text_color(t.muted).child(active.language ?? "")))
       .child(div().w(1).h(12).mx(4).bg(t.border))

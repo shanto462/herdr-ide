@@ -7,7 +7,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, v_virtual_list, InputState, Input } from "gpui-base";
 import * as fs from "fs/promises";
 import { props, shared, setShared, exec, notify, openOverlay, appHome, readTextFile, writeTextFile, nextCommand, theme, settings, checking, run, spaces, panes, focused } from "herdr";
-import { FS, CMD, FILETABS, DIRTY, GOTO, CURSOR, activeSpace, project, relTo, openInEditor, closeTab } from "./common.js";
+import { FS, CMD, FILETABS, DIRTY, GOTO, CURSOR, REVEAL, activeSpace, project, relTo, openInEditor, closeTab } from "./common.js";
 import { resolveLink, findHeading } from "./links.js";
 
 // Names the built-in highlighter accepts.
@@ -493,6 +493,50 @@ export default class IdeEditor extends View {
     });
   }
 
+  // ---------- merge conflicts ----------
+
+  conflicts(b) {
+    const text = b.code?.value() ?? "", out = [];
+    const re = /^<{7}(?: .*)?\n([\s\S]*?)^(?:\|{7}.*\n[\s\S]*?)?={7}\n([\s\S]*?)^>{7}(?: .*)?(?:\n|$)/gm;
+    for (let m; (m = re.exec(text));) out.push({ start: m.index, end: m.index + m[0].length, ours: m[1], theirs: m[2] });
+    return out;
+  }
+
+  // The conflict at or after the cursor (wrapping), resolved with one undo step.
+  resolve(b, how, cx) {
+    const list = this.conflicts(b);
+    if (!list.length) return;
+    const at = b.code.selected_range().start, c = list.find((x) => x.end > at) ?? list[0];
+    if (how === "next") { b.code.set_selected_range({ start: c.start, end: c.start }); b.code.focus(); return; }
+    b.code.set_selected_range({ start: c.start, end: c.end });
+    b.code.replace(how === "ours" ? c.ours : how === "theirs" ? c.theirs : c.ours + c.theirs);
+    cx.notify();
+  }
+
+  markResolved(b, cx) {
+    const root = b.root ?? project()?.path;
+    const go = async (cx) => {
+      if (b.dirty) { this.save(b, cx); }
+      const r = await exec("git", ["add", "--", b.path], { cwd: root, on: b.on });
+      notify(r.code === 0 ? { title: `${b.name} marked resolved`, level: "success", timeout: 2000 } : { title: "Could not mark resolved", body: (r.stderr || "").trim(), level: "error" });
+    };
+    cx.spawn(go);
+  }
+
+  conflictBar(b, t) {
+    const n = this.conflicts(b).length;
+    if (!n && !b.hadConflicts) return null;
+    if (n) b.hadConflicts = true;
+    return h_flex().flex_none().min_h(34).px(14).gap(6).items_center().border_b(1).border_color(t.border).bg(t.raised).text_size(12)
+      .child(div().flex_1().text_color(n ? t.blocked : t.ansi2).child(n ? `${n} merge conflict${n === 1 ? "" : "s"}: acts on the one at or after the cursor` : "No conflicts left"))
+      .when(n > 0, (e) => e
+        .child(this.button("mc-next", "Next", false, (cx) => this.resolve(b, "next", cx), t))
+        .child(this.button("mc-ours", "Accept current", false, (cx) => this.resolve(b, "ours", cx), t))
+        .child(this.button("mc-theirs", "Accept incoming", false, (cx) => this.resolve(b, "theirs", cx), t))
+        .child(this.button("mc-both", "Accept both", false, (cx) => this.resolve(b, "both", cx), t)))
+      .when(n === 0, (e) => e.child(this.button("mc-done", "Save & mark resolved", true, (cx) => { b.hadConflicts = false; this.markResolved(b, cx); }, t)));
+  }
+
   // ---------- find / replace ----------
 
   openFind(replace, cx) {
@@ -694,7 +738,14 @@ export default class IdeEditor extends View {
     return h_flex().h(28).flex_none().px(14).gap(4).items_center().text_size(12).text_color(t.dim).border_b(1).border_color(t.border).bg(t.background)
       .children(parts.map((p, i) => h_flex().gap(4).items_center().flex_none()
         .when(i > 0, (e) => e.child(svg("mods/workspace-chrome/chevron-right.svg").size(11).text_color(t.dim)))
-        .child(div().text_color(i === parts.length - 1 ? t.foreground : t.dim).child(p))))
+        .child(div().id(`bc-${i}`).px(2).rounded(3).cursor_pointer().text_color(i === parts.length - 1 ? t.foreground : t.dim).hover((x) => x.bg(t.hover).text_color(t.foreground))
+          .tooltip(i === parts.length - 1 ? "Reveal in Explorer" : "Show this folder in the Explorer")
+          .on_click(() => {
+            const base = b.path.slice(0, b.path.length - this.rel(b).length).replace(/\/$/, "");
+            const target = i === parts.length - 1 ? b.path : `${base}/${parts.slice(0, i + 1).join("/")}/`;
+            setShared(REVEAL, { path: target, at: Date.now() });
+            run("layout.select", { stack: "sidebar", child: "view-explorer" }); run("layout.show", { id: "sidebar" });
+          }).child(p))))
       .when(b.kind === "diff", (e) => e.child(div().ml(8).text_color(t.ansi2).child(`+${b.add ?? 0}`)).child(div().text_color(t.ansi1).child(`−${b.del ?? 0}`)))
       .child(div().flex_1())
       .when(Boolean(status), (e) => e.child(div().text_color(b.dirty ? t.blocked : t.dim).child(status)))
@@ -818,6 +869,7 @@ export default class IdeEditor extends View {
       .when(Boolean(b.code && b.changed), (e) => e.child(this.banner(b, t)))
       .when(Boolean(b.saveError) && !b.changed, (e) => e.child(div().px(14).py(6).flex_none().text_size(12).bg(t.raised).text_color(t.ansi1).child(b.saveError)))
       .when(Boolean(this.find.open && b.code), (e) => e.child(this.findBar(t)))
+      .when(Boolean(b.code && b.editable && (b.hadConflicts || b.code.value().includes("<<<<<<< "))), (e) => { const bar = this.conflictBar(b, t); return bar ? e.child(bar) : e; })
       .when(Boolean(b.hunkError), (e) => e.child(div().px(14).py(6).flex_none().text_size(12).bg(t.raised).text_color(t.ansi1).child(b.hunkError)))
       .child(b.path ? this.body(b, t) : div().p(16).text_color(t.dim).child("No file"));
   }

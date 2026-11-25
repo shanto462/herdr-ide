@@ -30,6 +30,10 @@ A Zed-style IDE layout for [Herdr](https://herdr.dev): one tab strip for termina
   - An IDE command palette (⌘⇧P).
   - ⌘-click on `path:line` in any terminal.
   - Ln/Col in the status bar.
+- **Merge conflicts:** a bar with Accept current / incoming / both, then Save & mark resolved.
+- **Blame:** the status bar shows who last changed the cursor's line, and when.
+- **Project-wide replace** from the Search view. It skips files with unsaved edits and refuses files that changed meanwhile.
+- **Explorer:** a virtualized tree (fast in big repos) with keyboard navigation (↑↓ ←→, Enter, Space, F2, ⌘⌫). Click a breadcrumb to reveal that folder.
 - **Find and replace in a file:**
   - ⌘F to find, ⌥⌘F to replace.
   - Match case, whole word and regex.

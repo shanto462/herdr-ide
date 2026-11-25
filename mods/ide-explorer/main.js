@@ -2,8 +2,8 @@
 // Single click opens a preview tab, double click keeps it; right click for file actions.
 // Drag a file onto a terminal (Claude) to paste its path.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { exec, watchFolder, theme, shared, setShared, openOverlay, pickFolder, checking, run, notify } from "herdr";
+import { v_flex, h_flex, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
+import { exec, watchFolder, theme, shared, setShared, openOverlay, pickFolder, checking, run, notify, nextCommand } from "herdr";
 import { ACTIVE, activeSpace, project, ensureProject, setRoot, openInEditor, fileTint, relTo } from "./common.js";
 
 const PER_FOLDER = 1000, TOTAL = 8000;
@@ -27,13 +27,19 @@ export default class Explorer extends View {
     this.context = null;
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set();
     this.marks = {}; this.folderMarks = {}; this.ignored = new Set();
-    this.scroll = ScrollHandle.new();
+    this.scroll = VirtualListScrollHandle.new();
+    this.handle = cx.focus_handle();
+    this.cursor = null; this.keyboard = false; this.lastClick = null;
+    this.focusAt = shared("ide.explorer.focus");
     this.afterAt = shared("ide.files.after")?.at;
     this.revealAt = shared("ide.reveal")?.at;
     this.activeKey = null;
     if (checking()) return;
     cx.timer.every(250, (cx) => this.tick(cx));
     cx.timer.every(15000, (cx) => this.refresh(cx));
+    // ⌘⇧E and pane.go hand the keyboard to the tree.
+    cx.timer.every(250, () => { const f = shared("ide.explorer.focus"); if (f !== this.focusAt) { this.focusAt = f; this.handle.focus(); this.keyboard = true; } });
+    cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); if (c === "focus") { this.handle.focus(); this.keyboard = true; cx.notify(); } } });
     // File events only mark things stale; at most one reload per second.
     cx.timer.every(1000, (cx) => {
       if (this.stale) { this.stale = false; this.marksStale = false; this.refresh(cx); }
@@ -241,34 +247,66 @@ export default class Explorer extends View {
     });
   }
 
-  rows(prefix, depth, out, t, inIgnored = false) {
+  // The visible tree as plain data, one item per row; elements are built only for
+  // the rows on screen (v_virtual_list).
+  flatten(prefix = "", depth = 0, out = [], inIgnored = false) {
     if (out.length >= TOTAL || depth > 40) return out;
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), abs = `${this.root}/${path}`;
-      const ignored = inIgnored || this.ignored.has(abs), mark = ignored ? null : entry.dir ? this.folderMarks[abs] : this.marks[abs];
-      const color = ignored ? t.dim : mark === "U" || mark === "A" ? t.ansi2 : mark === "D" || mark === "!" ? t.ansi1 : mark ? t.blocked : null;
-      const selected = !entry.dir && abs === this.activeKey;
-      const loading = entry.dir && open && this.pending.has(path);
-      out.push(h_flex().id(`f-${path}`).h(24).flex_none().pl(6 + depth * 14).pr(8).gap(5).items_center().cursor_pointer()
-        .when(selected, (e) => e.bg(t.selected)).when(!selected, (e) => e.hover((s) => s.bg(t.hover)))
-        .drag_paths([abs], { on: this.on })
-        .on_click((e, cx) => {
-          if (entry.dir) this.setOpen(path, !open, cx);
-          else openInEditor({ path: abs, on: this.on, rel: path, preview: e.click_count < 2 });
-        })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menu(path, entry.dir); })
-        .child(entry.dir ? svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.dim) : div().w(11).flex_none())
-        .child(entry.dir
-          ? svg("mods/files/folder.svg").size(14).flex_none().text_color(color ?? t.muted)
-          : div().w(14).flex_none().flex().justify_center().child(div().size(7).rounded(2).bg(ignored ? t.dim : fileTint(entry.name, t))))
-        .child(div().flex_1().min_w(0).truncate().text_color(color ?? (selected ? t.foreground : t.foreground)).child(entry.name))
-        .when(loading, (e) => e.child(svg("mods/workspace-chrome/spinner.svg").size(10).spin(900).text_color(t.dim)))
-        .when(Boolean(mark) && !entry.dir, (e) => e.child(div().w(12).flex_none().text_size(10.5).text_color(color).child(mark)))
-        .when(Boolean(mark) && entry.dir, (e) => e.child(div().size(6).flex_none().rounded(3).bg(color))));
-      if (entry.dir && open) this.rows(path, depth + 1, out, t, ignored);
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name, abs = `${this.root}/${path}`;
+      const ignored = inIgnored || this.ignored.has(abs), open = this.folders.has(path);
+      out.push({ path, abs, name: entry.name, dir: entry.dir, depth, open, ignored, parent: prefix,
+        mark: ignored ? null : entry.dir ? this.folderMarks[abs] : this.marks[abs], loading: entry.dir && open && this.pending.has(path) });
+      if (entry.dir && open) this.flatten(path, depth + 1, out, ignored);
     }
     return out;
+  }
+
+  row(item, t) {
+    const color = item.ignored ? t.dim : item.mark === "U" || item.mark === "A" ? t.ansi2 : item.mark === "D" || item.mark === "!" ? t.ansi1 : item.mark ? t.blocked : null;
+    const selected = !item.dir && item.abs === this.activeKey, cursor = this.keyboard && item.path === this.cursor;
+    return h_flex().id(`f-${item.path}`).h(24).w_full().flex_none().pl(6 + item.depth * 14).pr(8).gap(5).items_center().cursor_pointer()
+      .when(selected, (e) => e.bg(t.selected)).when(!selected, (e) => e.hover((s) => s.bg(t.hover)))
+      .when(cursor, (e) => e.border_1().border_color(t.accent))
+      .drag_paths([item.abs], { on: this.on })
+      .child(item.dir ? svg(`mods/files/chevron-${item.open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.dim) : div().w(11).flex_none())
+      .child(item.dir
+        ? svg("mods/files/folder.svg").size(14).flex_none().text_color(color ?? t.muted)
+        : div().w(14).flex_none().flex().justify_center().child(div().size(7).rounded(2).bg(item.ignored ? t.dim : fileTint(item.name, t))))
+      .child(div().flex_1().min_w(0).truncate().text_color(color ?? t.foreground).child(item.name))
+      .when(item.loading, (e) => e.child(svg("mods/workspace-chrome/spinner.svg").size(10).spin(900).text_color(t.dim)))
+      .when(Boolean(item.mark) && !item.dir, (e) => e.child(div().w(12).flex_none().text_size(10.5).text_color(color).child(item.mark)))
+      .when(Boolean(item.mark) && item.dir, (e) => e.child(div().size(6).flex_none().rounded(3).bg(color)));
+  }
+
+  // Click: folders toggle, files open as a preview; a second click within 400ms keeps it.
+  activate(item, cx, pin = false) {
+    this.cursor = item.path;
+    if (item.dir) { this.setOpen(item.path, !item.open, cx); return; }
+    openInEditor({ path: item.abs, on: this.on, rel: item.path, preview: !pin });
+  }
+
+  key(e, cx) {
+    const items = this.items ?? [], at = Math.max(0, items.findIndex((x) => x.path === this.cursor)), item = items[at];
+    const mod = e.modifiers ?? {};
+    const go = (i) => { const next = items[Math.max(0, Math.min(items.length - 1, i))]; if (next) { this.cursor = next.path; this.scroll.scroll_to_item(items.indexOf(next)); } };
+    this.keyboard = true;
+    if (e.key === "down") go(at + 1);
+    else if (e.key === "up") go(at - 1);
+    else if (e.key === "home") go(0);
+    else if (e.key === "end") go(items.length - 1);
+    else if (e.key === "pagedown") go(at + 20);
+    else if (e.key === "pageup") go(at - 20);
+    else if (e.key === "right" && item?.dir) { if (!item.open) this.setOpen(item.path, true, cx); else go(at + 1); }
+    else if (e.key === "left" && item) { if (item.dir && item.open) this.setOpen(item.path, false, cx); else if (item.parent) go(items.findIndex((x) => x.path === item.parent)); }
+    else if (e.key === "enter" && item) this.activate(item, cx, true);
+    else if (e.key === "space" && item && !item.dir) this.activate(item, cx, false);
+    else if (e.key === "f2" && item) openOverlay({ mod: "ide-fileops", kind: "dialog", width: 420, props: { mode: "name", action: "rename", root: this.root, on: this.on, rel: item.path, dir: item.dir, space: activeSpace()?.id } });
+    else if (e.key === "backspace" && mod.platform && item) openOverlay({ mod: "ide-fileops", kind: "dialog", width: 420, props: { mode: "trash", root: this.root, on: this.on, rel: item.path, dir: item.dir, space: activeSpace()?.id } });
+    else if (e.key === "escape") { this.keyboard = false; }
+    else return;
+    cx.stop_propagation();
+    cx.notify();
   }
 
   tool(id, tip, icon, action, t) {
@@ -278,14 +316,18 @@ export default class Explorer extends View {
 
   render(cx) {
     const t = theme(), p = project();
-    const rows = this.root && !this.rootClosed ? this.rows("", 0, [], t) : [];
+    const items = this.root && !this.rootClosed ? this.flatten() : [];
+    this.items = items;
+    const byPath = new Map(items.map((x) => [x.path, x]));
     // Scroll requests run after layout; keep asking for a few frames while folders load.
     if (this.scrollTo) {
       const index = this.flatIndex(this.scrollTo);
-      if (index >= 0) { this.scroll.scroll_to_item(index); this.scrollTo = null; }
+      if (index >= 0) { this.scroll.scroll_to_item(index, "center"); this.scrollTo = null; }
       else if (--this.scrollTries <= 0) this.scrollTo = null;
     }
-    return v_flex().id("ide-explorer").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.8)
+    const listHeight = Math.max(0, (this.size?.height ?? 600) - 60 - (this.limited ? 30 : 0));
+    return v_flex().id("ide-explorer").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
+      .on_size_change((size, cx) => { if (!this.size || Math.abs(size.height - this.size.height) > 1) { this.size = size; cx.notify(); } }).size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.8)
       .child(h_flex().h(34).flex_none().pl(14).pr(8).gap(2).items_center()
         .child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child("EXPLORER"))
         .child(this.tool("ex-new-file", "New file", "mods/ide-explorer/icons/file-plus.svg", () => this.dialog("file"), t))
@@ -301,9 +343,23 @@ export default class Explorer extends View {
         .child(div().id("ex-open-folder").p(3).rounded(4).text_color(t.dim).hover((s) => s.bg(t.raised).text_color(t.foreground)).tooltip("Open another folder as this space's project")
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); this.openFolder(cx); }).child(svg("mods/ide-explorer/icons/folder-open.svg").size(12)))
         .when(Boolean(p?.on), (e) => e.child(div().text_size(10.5).text_color(t.accent).child(p.on))))
-      .child(v_flex().id("ex-tree").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).pb(10)
-        .on_mouse_down("right", () => { if (this.root) this.menu("", true); })
-        .children(rows)
+      .child(div().id("ex-tree").relative().w_full().h(listHeight).flex_none()
+        .on_mouse_down("right", () => { if (this.root && Date.now() - (this.itemMenuAt ?? 0) > 80) this.menu("", true); })
+        .when(items.length > 0, (e) => e
+          .child(v_virtual_list("ex-list", items.length, 24, (i) => items[i]?.path ?? String(i),
+            (range) => items.slice(range.start, range.end).map((item) => this.row(item, t)))
+            .track_scroll(this.scroll).size_full()
+            .on_item_click((key, cx) => {
+              const item = byPath.get(key);
+              if (!item) return;
+              const now = Date.now(), again = this.lastClick?.key === key && now - this.lastClick.at < 400;
+              this.lastClick = { key, at: now }; this.keyboard = false;
+              this.handle.focus();
+              this.activate(item, cx, again);
+              cx.notify();
+            })
+            .on_item_secondary_click((key) => { const item = byPath.get(key); if (item) { this.itemMenuAt = Date.now(); this.cursor = item.path; this.menu(item.path, item.dir); } }))
+          .child(Scrollbar.vertical("ex-list").absolute().inset_0()))
         .when(!p, (e) => e.child(v_flex().p(14).gap(10).text_color(t.dim)
           .child(div().child("This space has no project folder yet."))
           .child(div().id("ex-pick").h(28).px(12).flex().items_center().justify_center().rounded(6).bg(t.solid).text_color(t.solid_foreground).cursor_pointer().on_click((_e, cx) => this.openFolder(cx)).child("Open Folder…"))))

@@ -1,1 +1,1 @@
-{ "place": "none", "title": "Explorer" }
+{ "place": "none", "title": "Explorer", "focusable": true }

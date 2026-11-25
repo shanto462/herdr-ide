@@ -2,8 +2,8 @@
 // Results are grouped by file; a click opens the file at that line.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, theme, checking, nextCommand, shared } from "herdr";
-import { project, openInEditor, fileTint } from "./common.js";
+import { exec, theme, checking, nextCommand, shared, readTextFile, writeTextFile, notify } from "herdr";
+import { project, openInEditor, fileTint, FILETABS, DIRTY } from "./common.js";
 
 const MAX_FILES = 300, MAX_MATCHES = 2000;
 
@@ -15,6 +15,7 @@ export default class Find extends View {
     this.include = InputState.new({ placeholder: "files to include, e.g. src/**/*.ts" });
     this.input.on("submit", (_e, cx) => this.search(cx));
     this.include.on("submit", (_e, cx) => this.search(cx));
+    this.replaceInput = InputState.new({ placeholder: "Replace (in every matching file)" });
     // Searches as you type, a moment after the last key.
     this.input.on("change", (_e, cx) => { this.typedAt = Date.now(); this.dirty = true; });
     if (checking()) return;
@@ -34,6 +35,7 @@ export default class Find extends View {
   }
 
   search(cx) {
+    this.confirmReplace = false;
     const p = project(), query = this.input.value();
     const run = Symbol();
     this.run = run;
@@ -81,6 +83,40 @@ export default class Find extends View {
     });
   }
 
+  // Replaces every match in the listed files, from what's on disk now. Files with
+  // unsaved edits are skipped; a file that changed meanwhile refuses the write.
+  replaceAll(cx) {
+    if (!this.groups.length || this.replacing || !this.root || this.on) return;
+    if (!this.confirmReplace) { this.confirmReplace = true; cx.notify(); return; }
+    this.confirmReplace = false; this.replacing = true;
+    const q = this.input.value(), repl = this.replaceInput.value(), root = this.root;
+    let src = this.regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (this.word) src = `\\b(?:${src})\\b`;
+    const re = new RegExp(src, "gm" + (this.caseSensitive ? "" : "i"));
+    const dirty = shared(DIRTY) ?? {}, tabs = shared(FILETABS) ?? {};
+    const unsaved = new Set(Object.entries(tabs).filter(([u]) => dirty[u]).map(([, e]) => e.path));
+    const files = this.groups.map((g) => g.file);
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let changed = 0, count = 0; const skipped = [], failed = [];
+      for (const file of files) {
+        const path = `${root}/${file}`;
+        if (unsaved.has(path)) { skipped.push(file); continue; }
+        try {
+          const text = await readTextFile(path);
+          const n = (text.match(re) ?? []).length;
+          if (!n) continue;
+          const next = this.regex ? text.replace(re, repl) : text.replace(re, () => repl);
+          await writeTextFile(path, next, text);
+          changed++; count += n;
+        } catch (e) { failed.push(file); }
+      }
+      this.replacing = false;
+      notify({ title: `Replaced ${count} in ${changed} file${changed === 1 ? "" : "s"}`, body: [skipped.length ? `Skipped (unsaved): ${skipped.join(", ")}` : "", failed.length ? `Failed: ${failed.join(", ")}` : ""].filter(Boolean).join("\n") || undefined, level: failed.length ? "warning" : "success" });
+      this.search(cx);
+    });
+  }
+
   toggle(key, cx) { this[key] = !this[key]; this.search(cx); }
 
   flag(id, label, on, key, tip, t) {
@@ -116,6 +152,13 @@ export default class Find extends View {
           .child(this.flag("find-case", "Aa", this.caseSensitive, "caseSensitive", "Match case", t))
           .child(this.flag("find-word", "ab", this.word, "word", "Whole word", t))
           .child(this.flag("find-re", ".*", this.regex, "regex", "Regular expression", t)))
+        .child(h_flex().gap(4).items_center()
+          .child(div().flex_1().child(field(this.replaceInput, "find-replace")))
+          .child(div().id("find-replace-all").h(26).px(8).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
+            .bg(this.confirmReplace ? t.ansi1 : t.raised).text_color(this.confirmReplace ? t.background : t.foreground).hover((x) => x.opacity(0.85))
+            .tooltip(this.on ? "Remote projects: not supported" : "Replace every match in the listed files (unsaved files are skipped)")
+            .on_click((_e, cx) => this.replaceAll(cx))
+            .child(this.replacing ? "Replacing…" : this.confirmReplace ? `Confirm: ${this.groups.length} files` : "Replace all")))
         .child(field(this.include, "find-include"))
         .child(div().h(18).text_size(11).text_color(t.dim).child(this.status ?? (this.total ? `${this.total}${this.total >= MAX_MATCHES ? "+" : ""} results in ${this.groups.length} files` : ""))))
       .child(v_flex().id("find-results").flex_1().min_h(0).overflow_y_scrollbar().pb(10)
