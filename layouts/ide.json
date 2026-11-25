@@ -1,0 +1,145 @@
+{
+  "id": "root",
+  "type": "column",
+  "titlebar": "none",
+  "traffic_lights": [
+    14,
+    14
+  ],
+  "background": "canvas",
+  "terminal_padding": [
+    10,
+    8
+  ],
+  "preview": "layouts/ide.svg",
+  "link_handlers": [
+    "ide-editor"
+  ],
+  "children": [
+    {
+      "id": "titlebar",
+      "type": "block",
+      "size": {
+        "px": 40
+      },
+      "window_drag": true,
+      "content": {
+        "mod": "ide-titlebar"
+      }
+    },
+    {
+      "id": "body",
+      "type": "row",
+      "divider": {
+        "width": 1,
+        "color": "border"
+      },
+      "children": [
+        {
+          "id": "sidebar",
+          "type": "stack",
+          "active": "view-explorer",
+          "size": {
+            "px": 300
+          },
+          "min": 200,
+          "max": 720,
+          "background": "chrome",
+          "children": [
+            {
+              "id": "view-explorer",
+              "type": "block",
+              "content": {
+                "mod": "ide-explorer"
+              }
+            },
+            {
+              "id": "view-git",
+              "type": "block",
+              "content": {
+                "mod": "ide-git"
+              }
+            },
+            {
+              "id": "view-search",
+              "type": "block",
+              "content": {
+                "mod": "ide-find"
+              }
+            },
+            {
+              "id": "view-spaces",
+              "type": "block",
+              "content": {
+                "mod": "spaces"
+              }
+            },
+            {
+              "id": "view-agents",
+              "type": "block",
+              "content": {
+                "mod": "agents"
+              }
+            }
+          ]
+        },
+        {
+          "id": "center",
+          "type": "column",
+          "resizable": false,
+          "children": [
+            {
+              "id": "tabs",
+              "type": "block",
+              "size": {
+                "px": 34
+              },
+              "content": {
+                "mod": "ide-tabs"
+              }
+            },
+            {
+              "id": "terminals",
+              "type": "block",
+              "content": {
+                "tab": "active",
+                "pane": {
+                  "gap": 4,
+                  "radius": 0,
+                  "background": "background",
+                  "border": {
+                    "width": 1,
+                    "color": "border"
+                  },
+                  "focus": {
+                    "width": 1,
+                    "color": "accent"
+                  },
+                  "header": {
+                    "content": {
+                      "mod": "pane"
+                    },
+                    "height": 26,
+                    "position": "top",
+                    "reveal": "always"
+                  },
+                  "lone": false
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "status",
+      "type": "block",
+      "size": {
+        "px": 26
+      },
+      "content": {
+        "mod": "ide-status"
+      }
+    }
+  ]
+}

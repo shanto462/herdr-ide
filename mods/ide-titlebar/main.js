@@ -1,0 +1,56 @@
+// Zed-style title bar: project ▾ · branch ▾ · worktree ▾ on the left, a command
+// field in the middle, agent status and dock toggles on the right. Drag to move the window.
+import { View, div, svg } from "gpui-kit";
+import { h_flex } from "gpui-base";
+import { theme, window, layout, settings, run, openOverlay, shared, agents, checking } from "herdr";
+import { project, activeSpace, findNode, SCM, ACTIVE } from "./common.js";
+
+export default class Titlebar extends View {
+  render() {
+    const t = theme(), w = window(), root = layout();
+    const space = activeSpace(), p = project(), scm = space ? shared(SCM)?.[space.id] : null;
+    const active = space ? shared(ACTIVE)?.[space.id] : null;
+    const stop = (_e, cx) => cx.stop_propagation();
+    const lights = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen ? 78 : 10;
+    const chip = (id, children, tip, action, strong = false) => h_flex().id(id).h(26).px(8).gap(6).flex_none().items_center().rounded(6).cursor_pointer()
+      .text_color(strong ? t.foreground : t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
+      .on_mouse_down("left", stop).on_click(action).children(children);
+    const toggle = (id, icon, tip, nodeId) => {
+      const node = findNode(root, nodeId), on = node && !node.hidden;
+      return div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+        .text_color(on ? t.foreground : t.dim).hover((s) => s.bg(t.hover)).tooltip(tip)
+        .on_mouse_down("left", stop).on_click(() => run("layout.toggle", { id: nodeId })).child(svg(icon).size(15));
+    };
+    const all = agents();
+    const working = all.filter((a) => a.status === "working").length, blocked = all.filter((a) => a.status === "blocked").length, done = all.filter((a) => a.status === "done").length;
+    return h_flex().id("ide-titlebar").size_full().min_w(0).pl(lights).pr(8).gap(2).items_center().bg(t.chrome).border_b(1).border_color(t.border).text_size(12.8)
+      .child(chip("tb-project", [div().font_semibold().max_w(220).truncate().child(p?.name ?? space?.name ?? "No project"), svg("mods/files/chevron-down.svg").size(10).text_color(t.dim)],
+        p ? `${p.path}\nSpaces and projects` : "Spaces", () => { run("layout.select", { stack: "sidebar", child: "view-spaces" }); run("layout.show", { id: "sidebar" }); }, true))
+      .when(Boolean(scm?.branch), (e) => e.child(chip("tb-branch", [
+        svg("mods/workspace-chrome/git-branch.svg").size(13).text_color(t.accent),
+        div().max_w(260).truncate().child(scm.branch),
+        scm.ahead ? div().text_size(11).text_color(t.dim).child(`↑${scm.ahead}`) : null,
+        scm.behind ? div().text_size(11).text_color(t.dim).child(`↓${scm.behind}`) : null,
+        svg("mods/files/chevron-down.svg").size(10).text_color(t.dim),
+      ].filter(Boolean), "Switch branch", () => openOverlay({ mod: "ide-branches", kind: "popup", width: 460, height: 520, props: { mode: "switch" } }))))
+      .when(Boolean(scm?.branch), (e) => e.child(chip("tb-worktree", [svg("mods/workspace-chrome/layers.svg").size(13), div().text_size(12).child("worktrees")],
+        "Switch worktree (stays in this space)", () => openOverlay({ mod: "ide-worktrees", kind: "popup", width: 520, height: 460 }))))
+      .child(h_flex().flex_1().min_w(0).justify_center()
+        .child(h_flex().id("tb-cmd").w(420).max_w_full().h(26).px(10).gap(8).items_center().rounded(7).border_1().border_color(t.border).bg(t.background).cursor_pointer()
+          .text_color(t.dim).hover((s) => s.border_color(t.input))
+          .on_mouse_down("left", stop).on_click(() => run("mod.open", { name: "ide-quickopen" }))
+          .child(svg("mods/workspace-chrome/search.svg").size(13))
+          .child(div().flex_1().min_w(0).truncate().text_size(12).child(active?.rel ? `${p?.name ?? ""} — ${active.rel}` : `Search ${p?.name ?? "files"}…`))
+          .child(div().text_size(11).child("⌘P"))))
+      .when(working + blocked + done > 0, (e) => e.child(chip("tb-agents", [
+        working ? h_flex().gap(4).items_center().child(svg("mods/workspace-chrome/spinner.svg").size(11).spin(900).text_color(t.working)).child(div().text_size(11.5).child(String(working))) : null,
+        blocked ? h_flex().gap(4).items_center().child(div().size(7).rounded(4).bg(t.blocked)).child(div().text_size(11.5).child(String(blocked))) : null,
+        done ? h_flex().gap(4).items_center().child(div().size(7).rounded(4).bg(t.done)).child(div().text_size(11.5).child(String(done))) : null,
+      ].filter(Boolean), "Agents", () => { run("layout.select", { stack: "sidebar", child: "view-agents" }); run("layout.show", { id: "sidebar" }); })))
+      .child(toggle("tb-left", "mods/workspace-chrome/panel-left.svg", "Toggle left dock (⌘B)", "sidebar"))
+      .when(Boolean(w?.buttons), (e) => e
+        .child(div().id("w-min").size(26).flex().items_center().justify_center().rounded(6).hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => run("window.minimize")).child("−"))
+        .child(div().id("w-max").size(26).flex().items_center().justify_center().rounded(6).hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => run("window.maximize")).child("□"))
+        .child(div().id("w-close").size(26).flex().items_center().justify_center().rounded(6).hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => run("window.close")).child(svg("mods/pane/close.svg").size(12))));
+  }
+}

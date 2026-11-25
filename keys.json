@@ -1,0 +1,9 @@
+{
+  "layout:ide": {
+    "cmd-p": "mod.open:ide-quickopen",
+    "cmd-s": "ide-editor.save",
+    "cmd-shift-e": "ide-status.explorer",
+    "cmd-shift-g": "ide-status.git",
+    "cmd-shift-f": "ide-status.search"
+  }
+}
