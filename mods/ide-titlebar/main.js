@@ -5,13 +5,32 @@ import { h_flex } from "gpui-base";
 import { theme, window, layout, settings, run, openOverlay, shared, agents, checking } from "herdr";
 import { project, activeSpace, findNode, SCM, ACTIVE } from "./common.js";
 
+// macOS draws its window buttons at fixed screen points (the layout's traffic_lights)
+// while this bar scales with zoom, so keep them centered in the bar at every zoom.
+const BUTTON_H = 14, BUTTON_SPAN = 64;
+
 export default class Titlebar extends View {
+  init(_props, cx) {
+    if (checking()) return;
+    cx.timer.after(300, () => this.placeLights());
+    cx.timer.every(1000, () => this.placeLights());
+  }
+
+  placeLights() {
+    const w = window(), root = layout(), bar = findNode(root, "titlebar");
+    if (w?.platform !== "macos" || !root || bar?.content?.mod !== "ide-titlebar") return;
+    const zoom = settings()?.zoom ?? 1, x = root.traffic_lights?.[0] ?? 14;
+    const y = Math.max(3, Math.round(((bar.size?.px ?? 40) * zoom - BUTTON_H) / 2));
+    if (root.traffic_lights?.[1] !== y) run("layout.set", { layout: { ...root, traffic_lights: [x, y] } });
+  }
+
   render() {
     const t = theme(), w = window(), root = layout();
     const space = activeSpace(), p = project(), scm = space ? shared(SCM)?.[space.id] : null;
     const active = space ? shared(ACTIVE)?.[space.id] : null;
     const stop = (_e, cx) => cx.stop_propagation();
-    const lights = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen ? 78 : 10;
+    const lights = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen
+      ? ((root?.traffic_lights?.[0] ?? 14) + BUTTON_SPAN) / (settings()?.zoom ?? 1) : 10;
     const chip = (id, children, tip, action, strong = false) => h_flex().id(id).h(26).px(8).gap(6).flex_none().items_center().rounded(6).cursor_pointer()
       .text_color(strong ? t.foreground : t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_mouse_down("left", stop).on_click(action).children(children);

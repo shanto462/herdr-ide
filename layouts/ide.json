@@ -4,7 +4,7 @@
   "titlebar": "none",
   "traffic_lights": [
     14,
-    14
+    13
   ],
   "background": "canvas",
   "terminal_padding": [
@@ -38,13 +38,13 @@
         {
           "id": "sidebar",
           "type": "stack",
+          "background": "chrome",
           "active": "view-explorer",
           "size": {
             "px": 300
           },
           "min": 200,
           "max": 720,
-          "background": "chrome",
           "children": [
             {
               "id": "view-explorer",
@@ -111,9 +111,15 @@
               "content": {
                 "tab": "active",
                 "pane": {
-                  "gap": 4,
-                  "radius": 0,
                   "background": "background",
+                  "header": {
+                    "content": {
+                      "mod": "pane"
+                    },
+                    "reveal": "always",
+                    "height": 26,
+                    "position": "top"
+                  },
                   "border": {
                     "width": 1,
                     "color": "border"
@@ -122,15 +128,8 @@
                     "width": 1,
                     "color": "accent"
                   },
-                  "header": {
-                    "content": {
-                      "mod": "pane"
-                    },
-                    "height": 26,
-                    "position": "top",
-                    "reveal": "always"
-                  },
-                  "lone": false
+                  "radius": 0,
+                  "gap": 4
                 }
               }
             }
