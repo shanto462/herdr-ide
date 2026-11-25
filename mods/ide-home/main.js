@@ -5,7 +5,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, run, shared, setShared, agents, openOverlay, settings } from "herdr";
-import { activeSpace, project, openInEditor, RECENT, TURNS, SCM, FIND_FOCUS } from "./common.js";
+import { activeSpace, project, openInEditor, RECENT, TURNS, SCM, FIND_FOCUS, paper } from "./common.js";
 
 const view = (child) => { run("layout.select", { stack: "sidebar", child }); run("layout.show", { id: "sidebar" }); };
 
@@ -37,7 +37,7 @@ export default class Home extends View {
     const ago = (at) => { const m = Math.round((Date.now() - at) / 60000); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`; };
     const dot = (status) => div().size(7).flex_none().rounded(4).bg(t[status] ?? t.idle);
 
-    return div().id("ide-home").size_full().overflow_y_scrollbar().bg(t.background).text_color(t.foreground).text_size(13)
+    return div().id("ide-home").size_full().overflow_y_scrollbar().bg(paper(t)).text_color(t.foreground).text_size(13)
       .child(v_flex().w_full().max_w(980).mx_auto().px(32).py(36).gap(18)
         .child(v_flex().gap(4)
           .child(div().text_size(26).font_semibold().child(p?.name ?? space?.name ?? "Home"))

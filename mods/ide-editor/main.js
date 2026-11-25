@@ -7,7 +7,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, v_virtual_list, InputState, Input } from "gpui-base";
 import * as fs from "fs/promises";
 import { props, shared, setShared, exec, notify, openOverlay, agents, appHome, readTextFile, writeTextFile, nextCommand, theme, settings, checking, run, spaces, panes, focused } from "herdr";
-import { FS, CMD, FILETABS, DIRTY, GOTO, CURSOR, REVEAL, activeSpace, project, relTo, openInEditor, closeTab } from "./common.js";
+import { FS, CMD, FILETABS, DIRTY, GOTO, CURSOR, REVEAL, activeSpace, project, relTo, openInEditor, closeTab, paper } from "./common.js";
 import { resolveLink, findHeading } from "./links.js";
 import { symbols, fromCtags } from "./symbols.js";
 
@@ -822,7 +822,7 @@ export default class IdeEditor extends View {
   breadcrumb(b, t) {
     const parts = this.rel(b).split("/");
     const status = b.saving ? "Saving…" : b.dirty ? (b.recovered ? "Recovered unsaved edits" : "Unsaved") : b.note;
-    return h_flex().h(28).flex_none().px(14).gap(4).items_center().text_size(12).text_color(t.dim).border_b(1).border_color(t.border).bg(t.background)
+    return h_flex().h(28).flex_none().px(14).gap(4).items_center().text_size(12).text_color(t.dim).border_b(1).border_color(t.border).bg(paper(t))
       .children(parts.map((p, i) => h_flex().gap(4).items_center().flex_none()
         .when(i > 0, (e) => e.child(svg("mods/workspace-chrome/chevron-right.svg").size(11).text_color(t.dim)))
         .child(div().id(`bc-${i}`).px(2).rounded(3).cursor_pointer().text_color(i === parts.length - 1 ? t.foreground : t.dim).hover((x) => x.bg(t.hover).text_color(t.foreground))
@@ -967,7 +967,7 @@ export default class IdeEditor extends View {
 
   render() {
     const t = theme(), b = this.b;
-    return v_flex().id("ide-editor").on_size_change((size, cx) => { this.size = size; cx.notify(); }).size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
+    return v_flex().id("ide-editor").on_size_change((size, cx) => { this.size = size; cx.notify(); }).size_full().min_h(0).bg(paper(t)).text_color(t.foreground).text_size(13)
       .child(this.breadcrumb(b, t))
       .when(Boolean(b.code && b.changed), (e) => e.child(this.banner(b, t)))
       .when(Boolean(b.saveError) && !b.changed, (e) => e.child(div().px(14).py(6).flex_none().text_size(12).bg(t.raised).text_color(t.ansi1).child(b.saveError)))

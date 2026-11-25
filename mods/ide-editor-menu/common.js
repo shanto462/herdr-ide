@@ -106,3 +106,9 @@ export function closeTab(id) {
 
 // Runs a shell snippet on the project's machine; $1.. are the args.
 export const sh = (script, args = [], opts = {}) => exec("sh", ["-c", script, "ide", ...args], opts);
+
+// Glass themes give `canvas` an alpha; then content areas (editor, Home, active tab)
+// use the translucent `surface` so the blurred desktop shows through. Solid themes
+// keep their `background`.
+export const isGlass = (t) => /^#[0-9a-f]{8}$/i.test(t.canvas ?? "");
+export const paper = (t) => (isGlass(t) ? t.surface : t.background);

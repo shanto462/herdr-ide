@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, panes, agents, run, openOverlay, theme, window, layout, settings, exec, hc, notify, shared, setShared, setWindowTitle, setBadge, checking, nextCommand, pickFolder } from "herdr";
 import { SHORTCUTS, SAVED, USAGE, ACCOUNT_LABEL } from "./config.js";
-import { project, activeSpace, relTo, languageName, fileTint, closeTab, sh, setRoot, OPEN, ACTIVE, FILETABS, DIRTY, GOTO, RECENT, TURNS } from "./common.js";
+import { project, activeSpace, relTo, languageName, fileTint, closeTab, sh, setRoot, OPEN, ACTIVE, FILETABS, DIRTY, GOTO, RECENT, TURNS, paper } from "./common.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -342,7 +342,7 @@ export default class Tabs extends View {
     const fileItem = (c, i, [uid, e]) => {
       const name = e.path.split("/").pop(), isDirty = Boolean(dirty[uid]), hovered = this.hoverTab === c.id;
       return h_flex().id(`tab-${c.id}`).h_full().pl(10).pr(5).gap(6).items_center().flex_none().text_size(12.3)
-        .when(c.active, el => el.bg(t.background).border_t_2().border_color(t.accent).text_color(t.foreground))
+        .when(c.active, el => el.bg(paper(t)).border_t_2().border_color(t.accent).text_color(t.foreground))
         .when(!c.active, el => el.text_color(t.muted).hover(s => s.bg(t.hover)))
         .tooltip(e.path)
         .on_hover((h, cx) => { const next = h ? c.id : this.hoverTab === c.id ? null : this.hoverTab; if (next !== this.hoverTab) { this.hoverTab = next; cx.notify(); } })
@@ -367,7 +367,7 @@ export default class Tabs extends View {
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       return h_flex().id(`tab-${c.id}`).h_full().pl(10).pr(5).gap(6).items_center().flex_none().text_size(12.3)
         .on_hover((h, cx) => { const next = h ? c.id : this.hoverTab === c.id ? null : this.hoverTab; if (next !== this.hoverTab) { this.hoverTab = next; cx.notify(); } })
-        .when(c.active, el => el.bg(t.background).border_t_2().border_color(t.accent).text_color(t.foreground))
+        .when(c.active, el => el.bg(paper(t)).border_t_2().border_color(t.accent).text_color(t.foreground))
         .when(!c.active, el => el.text_color(t.muted).hover(s => s.bg(t.hover)))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
         .on_mouse_up("left", () => {
@@ -392,7 +392,7 @@ export default class Tabs extends View {
     return h_flex().size_full().min_w(0).pr(6).gap(2).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .when(Boolean(homeTab), (el) => el.child(div().id("tab-home").h_full().w(34).flex_none().flex().items_center().justify_center()
-        .when(homeActive, (e) => e.bg(t.background).border_t_2().border_color(t.accent).text_color(t.foreground))
+        .when(homeActive, (e) => e.bg(paper(t)).border_t_2().border_color(t.accent).text_color(t.foreground))
         .when(!homeActive, (e) => e.text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)))
         .tooltip("Home").on_mouse_down("left", stop).on_click(() => run("tab.select", { id: homeTab }))
         .child(svg("mods/ide-explorer/icons/home.svg").size(14))))
