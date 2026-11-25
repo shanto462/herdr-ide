@@ -3,7 +3,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { theme, layout, run, shared, setShared, agents, openOverlay, checking, nextCommand, exec } from "herdr";
-import { activeSpace, project, findNode, SCM, ACTIVE, CURSOR } from "./common.js";
+import { activeSpace, project, findNode, SCM, ACTIVE, CURSOR, isGlass } from "./common.js";
 
 const VIEWS = [
   { child: "view-explorer", icon: "mods/workspace-chrome/files.svg", tip: "Project (⌘⇧E)" },
@@ -72,7 +72,9 @@ export default class Status extends View {
       .text_color(on ? t.foreground : t.dim).when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_mouse_down("left", stop).on_click(action).child(child);
     const badge = (n, color) => div().px(4).rounded(6).bg(color).text_size(9.5).text_color(t.background).child(String(n));
+    // Glass: the status bar floats as a capsule inset from the window edges.
     return h_flex().id("ide-status").size_full().min_w(0).px(6).gap(2).items_center().text_size(11.5)
+      .when(isGlass(t), (e) => e.mx(8).my(4).px(8).rounded_full().bg(t.raised).border_1().border_color(t.border).shadow_sm())
       .children(VIEWS.map((v) => {
         const on = sidebar && !sidebar.hidden && sidebar.active === v.child;
         const probs = space ? shared("ide.problems")?.[space.id] : null;

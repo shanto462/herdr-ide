@@ -41,8 +41,8 @@
           "type": "stack",
           "background": {
             "gradient": [
-              "#ffffff14",
-              "#ffffff03"
+              "#ffffff26",
+              "#ffffff00"
             ],
             "angle": 180
           },
@@ -108,8 +108,8 @@
           "type": "column",
           "background": {
             "gradient": [
-              "#ffffff14",
-              "#ffffff03"
+              "#ffffff26",
+              "#ffffff00"
             ],
             "angle": 180
           },
@@ -172,7 +172,7 @@
       "id": "status",
       "type": "block",
       "size": {
-        "px": 26
+        "px": 34
       },
       "content": {
         "mod": "ide-status"
@@ -184,5 +184,5 @@
     "dark": "liquid-glass-dark"
   },
   "window_blur": true,
-  "terminal_opacity": 0.5
+  "terminal_opacity": 0.4
 }

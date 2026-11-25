@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, panes, agents, run, openOverlay, theme, window, layout, settings, exec, hc, notify, shared, setShared, setWindowTitle, setBadge, checking, nextCommand, pickFolder } from "herdr";
 import { SHORTCUTS, SAVED, USAGE, ACCOUNT_LABEL } from "./config.js";
-import { project, activeSpace, relTo, languageName, fileTint, closeTab, sh, setRoot, OPEN, ACTIVE, FILETABS, DIRTY, GOTO, RECENT, TURNS, paper } from "./common.js";
+import { project, activeSpace, relTo, languageName, fileTint, closeTab, sh, setRoot, OPEN, ACTIVE, FILETABS, DIRTY, GOTO, RECENT, TURNS, paper, isGlass } from "./common.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -328,8 +328,11 @@ export default class Tabs extends View {
   // launchers from config.js (names, order, labels, usage meters), and
   // dock controls.
   render() {
-    const t = theme();
+    const t = theme(), glass = isGlass(t);
     const space = spaces().find(p => p.active);
+    // Glass: tabs are floating pills; solid themes: a flat strip with an accent top line.
+    const shape = (el) => glass ? el.h(26).rounded_full().border_1().border_color("#00000000") : el.h_full();
+    const lit = (el) => glass ? el.bg(t.raised).border_color(t.border).shadow_sm().text_color(t.foreground) : el.bg(paper(t)).border_t_2().border_color(t.accent).text_color(t.foreground);
     const homeTab = space ? this.homeOf(space) : null;
     const shown = (space?.tabs ?? []).filter((c) => c.id !== homeTab);
     const homeActive = Boolean(homeTab && space.tabs.find((c) => c.id === homeTab)?.active);
@@ -341,8 +344,8 @@ export default class Tabs extends View {
     const fileOf = (tabId) => Object.entries(reg).find(([, e]) => e.tab === tabId) ?? null;
     const fileItem = (c, i, [uid, e]) => {
       const name = e.path.split("/").pop(), isDirty = Boolean(dirty[uid]), hovered = this.hoverTab === c.id;
-      return h_flex().id(`tab-${c.id}`).h_full().pl(10).pr(5).gap(6).items_center().flex_none().text_size(12.3)
-        .when(c.active, el => el.bg(paper(t)).border_t_2().border_color(t.accent).text_color(t.foreground))
+      return h_flex().id(`tab-${c.id}`).pl(10).pr(5).gap(6).items_center().flex_none().text_size(12.3).map(shape)
+        .when(c.active, lit)
         .when(!c.active, el => el.text_color(t.muted).hover(s => s.bg(t.hover)))
         .tooltip(e.path)
         .on_hover((h, cx) => { const next = h ? c.id : this.hoverTab === c.id ? null : this.hoverTab; if (next !== this.hoverTab) { this.hoverTab = next; cx.notify(); } })
@@ -365,9 +368,9 @@ export default class Tabs extends View {
       if (file) return fileItem(c, i, file);
       const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
-      return h_flex().id(`tab-${c.id}`).h_full().pl(10).pr(5).gap(6).items_center().flex_none().text_size(12.3)
+      return h_flex().id(`tab-${c.id}`).pl(10).pr(5).gap(6).items_center().flex_none().text_size(12.3).map(shape)
         .on_hover((h, cx) => { const next = h ? c.id : this.hoverTab === c.id ? null : this.hoverTab; if (next !== this.hoverTab) { this.hoverTab = next; cx.notify(); } })
-        .when(c.active, el => el.bg(paper(t)).border_t_2().border_color(t.accent).text_color(t.foreground))
+        .when(c.active, lit)
         .when(!c.active, el => el.text_color(t.muted).hover(s => s.bg(t.hover)))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
         .on_mouse_up("left", () => {
@@ -389,14 +392,14 @@ export default class Tabs extends View {
       .text_size(11.8).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
       .hover(s => s.bg(t.hover)).on_mouse_down("left", stop).on_click(action).child(label);
     const p = project();
-    return h_flex().size_full().min_w(0).pr(6).gap(2).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+    return h_flex().size_full().min_w(0).pr(6).gap(2).items_center().when(!glass, (e) => e.bg(t.chrome).border_b(1).border_color(t.border))
       .on_mouse_up("left", () => { this.pressed = null; })
-      .when(Boolean(homeTab), (el) => el.child(div().id("tab-home").h_full().w(34).flex_none().flex().items_center().justify_center()
-        .when(homeActive, (e) => e.bg(paper(t)).border_t_2().border_color(t.accent).text_color(t.foreground))
+      .when(Boolean(homeTab), (el) => el.child(div().id("tab-home").w(34).flex_none().flex().items_center().justify_center().map(shape).when(glass, (e) => e.ml(4))
+        .when(homeActive, lit)
         .when(!homeActive, (e) => e.text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)))
         .tooltip("Home").on_mouse_down("left", stop).on_click(() => run("tab.select", { id: homeTab }))
         .child(svg("mods/ide-explorer/icons/home.svg").size(14))))
-      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().overflow_x_scrollbar().children(shown.map(item))
+      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().when(glass, (e) => e.gap(3).px(3)).overflow_x_scrollbar().children(shown.map(item))
         .child(div().id("tab-new").size(24).ml(4).flex_none().flex().items_center().justify_center().rounded(5).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
           .tooltip(p ? `New terminal in ${p.name}` : "New terminal").on_mouse_down("left", stop)
           .on_click(() => run("tab.new", p && !p.on ? { space: space?.id, folder: p.path } : {}))
