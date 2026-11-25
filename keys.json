@@ -6,6 +6,7 @@
     "cmd-shift-g": "ide-status.git",
     "cmd-shift-f": "ide-status.search",
     "cmd-shift-p": "mod.open:ide-commands",
-    "cmd-n": "ide-tabs.new_space"
+    "cmd-n": "ide-tabs.new_space",
+    "cmd-shift-m": "ide-status.problems"
   }
 }

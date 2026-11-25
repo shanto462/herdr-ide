@@ -34,6 +34,10 @@ A Zed-style IDE layout for [Herdr](https://herdr.dev): one tab strip for termina
 - **Blame:** the status bar shows who last changed the cursor's line, and when.
 - **Project-wide replace** from the Search view. It skips files with unsaved edits and refuses files that changed meanwhile.
 - **Explorer:** a virtualized tree (fast in big repos) with keyboard navigation (↑↓ ←→, Enter, Space, F2, ⌘⌫). Click a breadcrumb to reveal that folder.
+- **Review comments for agents:** click any line in a diff to comment on it, then "Send to <agent>". All comments are pasted into that agent's prompt for you to send.
+- **Problems** (⌘⇧M): runs the project's TypeScript / ESLint / Ruff / go vet / cargo check and lists the results by file; click one to jump there. It re-runs when you save.
+- **Go to symbol** (⌘⇧O): an outline of the file, via universal-ctags when installed, else built-in patterns for JS/TS, Python, Go, Rust, Java/Kotlin/Swift/C#, Ruby, PHP, shell, Markdown and LaTeX.
+- **Remote files are editable:** saves go through `hc file write --on <machine>`, with the same changed-on-disk check.
 - **Find and replace in a file:**
   - ⌘F to find, ⌥⌘F to replace.
   - Match case, whole word and regex.

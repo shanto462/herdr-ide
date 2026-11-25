@@ -68,6 +68,10 @@ Top to bottom:
 - **Blame:** the status bar runs `git blame --porcelain -L n,n` for the cursor line (at most every 700ms, only when the line changes; skipped while unsaved).
 - **Breadcrumbs** reveal that folder (or the file) in the Explorer.
 - **Project replace:** the Search view's Replace field and "Replace all" (click twice to confirm). Each listed file is re-read and written with `writeTextFile(path, new, old)`; files with unsaved editors are skipped.
+- **Review comments:** in a plain-rendered diff, clicking a line opens a comment input under it (Enter adds it, Esc cancels). Comments live in shared `ide.review` per space and show under their line with ×. A review bar lists "Send to <agent> · <tab>" for each agent in the space. Sending pastes "Please address these review comments: …" (file:line, code, comment) through a borrowed clipboard and `terminal.paste`, without pressing Enter, then clears the list.
+- **Problems (⌘⇧M, `view-problems`):** detects the checkers from files in the project folder: `tsconfig.json` with `node_modules/.bin/tsc`, `node_modules/.bin/eslint`, `ruff` with Python files, `go.mod` with `go`, `Cargo.toml` with `cargo`. It parses each one's output (tsc text, ESLint/Ruff JSON, go vet/cargo short), groups the results by file, and opens a result at its line:col. It re-runs 1.2s after an editor save (shared `ide.saved`), and the status bar's Problems button shows the error count.
+- **Outline (⌘⇧O):** `ide-outline` popup with symbols from `ctags --output-format=json` (universal-ctags) or `symbols.js` language patterns (LaTeX sections and Markdown headings included); type to filter, Enter jumps.
+- **Remote saves:** read the remote file and compare it with what was loaded, then `hc file write --on <machine> <path> < tmpfile`.
 - **Search (⌘⇧F):** ripgrep (git grep as fallback) with match case / whole word / regex / include globs; results grouped by file; a click opens the file at the line.
 - **Keys** (`layout:ide`): ⌘P go to file, ⌘S save, ⌘⇧E / ⌘⇧G / ⌘⇧F switch the dock view (pressing it again hides the dock), ⌘B toggles the dock, and ⌘-click on `path:line` in a terminal opens it at that line.
 

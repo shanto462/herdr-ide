@@ -30,6 +30,8 @@ function commands() {
     ["Show Spaces", "", view("view-spaces")],
     ["Show Agents", "", view("view-agents")],
     ["Toggle sidebar", "⌘B", () => run("layout.toggle", { id: "sidebar" })],
+    ["Go to symbol in file…", "⌘⇧O", () => editorCommand("outline", a.uid), !file],
+    ["Show Problems", "⌘⇧M", view("view-problems")],
     ["Find in file", "⌘F", () => editorCommand("find", a.uid), !file],
     ["Replace in file", "⌥⌘F", () => editorCommand("find_replace", a.uid), !file],
     ["Save file", "⌘S", () => editorCommand("save", a.uid), !a?.dirty],

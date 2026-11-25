@@ -6,9 +6,10 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, v_virtual_list, InputState, Input } from "gpui-base";
 import * as fs from "fs/promises";
-import { props, shared, setShared, exec, notify, openOverlay, appHome, readTextFile, writeTextFile, nextCommand, theme, settings, checking, run, spaces, panes, focused } from "herdr";
+import { props, shared, setShared, exec, notify, openOverlay, agents, appHome, readTextFile, writeTextFile, nextCommand, theme, settings, checking, run, spaces, panes, focused } from "herdr";
 import { FS, CMD, FILETABS, DIRTY, GOTO, CURSOR, REVEAL, activeSpace, project, relTo, openInEditor, closeTab } from "./common.js";
 import { resolveLink, findHeading } from "./links.js";
+import { symbols, fromCtags } from "./symbols.js";
 
 // Names the built-in highlighter accepts.
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", pyi: "py", yml: "yaml", toml: "yaml", jsonc: "json", bash: "sh", zsh: "sh", ps1: "sh", env: "sh", example: "sh", gitignore: "sh", dockerignore: "sh", gitattributes: "sh", claudeignore: "sh", csproj: "xml", props: "xml", targets: "xml", config: "xml", svg: "xml", cshtml: "html", tex: "txt", sty: "txt", cls: "txt" };
@@ -86,6 +87,9 @@ function diffRows(lines) {
   });
 }
 
+const REVIEW = "ide.review"; // { [spaceId]: [{ id, path, rel, line, side, code, text }] }
+const Outline = { ctags: undefined }; // false once universal-ctags proved unavailable
+
 export default class IdeEditor extends View {
   init(_props, cx) {
     const p = props() ?? {};
@@ -101,6 +105,9 @@ export default class IdeEditor extends View {
     this.find.input.on("change", (_e, cx) => { this.findMatches(cx); this.showMatch(); cx.notify(); });
     this.find.input.on("submit", (_e, cx) => this.step(1, cx));
     this.find.replace.on("submit", (_e, cx) => this.replaceOne(cx));
+    this.commentRow = null;
+    this.commentInput = InputState.new({ placeholder: "Comment for the agent… (⏎ to add, Esc to cancel)" });
+    this.commentInput.on("submit", (_e, cx) => { const row = this.b.rows?.[this.commentRow]; if (row) this.addComment(this.b, row, cx); });
     if (checking()) return;
     cx.timer.every(120, (cx) => this.tick(cx));
     cx.timer.every(1000, (cx) => this.flush(cx));
@@ -150,6 +157,7 @@ export default class IdeEditor extends View {
     else if (c === "preview") { if (b.markdown) { b.mdPreview = !b.mdPreview; b.view++; } }
     else if (c === "focus") { if (b.code) b.code.focus(); }
     else if (c === "reveal") { if (!b.on) exec("open", ["-R", b.path]); }
+    else if (c === "outline") this.outline(b, cx);
     else if (c === "find") this.openFind(false, cx);
     else if (c === "find_replace") this.openFind(true, cx);
     else if (c === "goto_line") openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } });
@@ -348,8 +356,8 @@ export default class IdeEditor extends View {
     const t = theme(), tooBig = text.length > LIMIT;
     const draft = tooBig || saved?.value === text ? null : saved;
     if (saved && !draft) dropDraft(b.path);
-    b.editable = !b.on && !tooBig && !b.encoding;
-    b.note = b.on ? "Read-only · remote file" : tooBig ? "Read-only · too large to edit" : b.encoding ? `Read-only · ${b.encoding}` : "";
+    b.editable = !tooBig && !b.encoding;
+    b.note = tooBig ? "Read-only · too large to edit" : b.encoding ? `Read-only · ${b.encoding}` : b.on ? `On ${b.on}` : "";
     b.csv = CSV.test(b.name);
     b.table = b.csv && !draft;
     if (b.csv) b.rowsCsv = null;
@@ -673,7 +681,9 @@ export default class IdeEditor extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        await writeTextFile(path, text, expected);
+        if (b.on) await this.remoteWrite(path, text, expected, b.on);
+        else await writeTextFile(path, text, expected);
+        setShared("ide.saved", { path, at: `${Date.now()}` });
         b.disk = text; b.changed = false; b.latest = null; b.recovered = false; b.draftStale = false;
         b.dirty = b.code.value() !== text;
         await dropDraft(path);
@@ -687,6 +697,83 @@ export default class IdeEditor extends View {
         cx.notify();
       }
     });
+  }
+
+  // Another machine: refuse if the file changed since it was loaded, then pipe the
+  // buffer through `hc file write --on <machine>`.
+  async remoteWrite(path, text, expected, on) {
+    const now = await readTextFile(path, { on }).catch(() => null);
+    if (now !== expected) throw new Error("The file changed outside Herdr. Reload before saving; your edits are still here.");
+    const tmp = `${appHome()}/data/ide-remote-${Date.now()}.txt`;
+    await writeTextFile(tmp, text, null);
+    try {
+      const r = await exec("sh", ["-c", 'hc file write --on "$2" "$3" < "$1"', "ide", tmp, on, path], { timeout: 60000 });
+      if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim() || "Could not write the file there");
+    } finally { fs.unlink(tmp).catch(() => {}); }
+  }
+
+  // ---------- outline ----------
+
+  outline(b, cx) {
+    if (!b.code) return;
+    const text = b.code.value();
+    cx.spawn(async () => {
+      let items = null;
+      if (!b.on && !b.dirty && Outline.ctags !== false) {
+        const r = await exec("ctags", ["--output-format=json", "--fields=+n", "-f", "-", b.path]).catch(() => null);
+        if (r?.code === 0 && r.stdout.trim()) items = fromCtags(r.stdout); else Outline.ctags = false;
+      }
+      items ??= symbols(text, b.name);
+      openOverlay({ mod: "ide-outline", kind: "popup", width: 560, height: 520, props: { uid: this.uid, name: b.name, items: items.slice(0, 2000) } });
+    });
+  }
+
+  // ---------- review comments → agents ----------
+
+  comments() { return shared(REVIEW)?.[activeSpace()?.id] ?? []; }
+
+  addComment(b, row, cx) {
+    const text = this.commentInput.value().trim(), space = activeSpace()?.id;
+    if (!text || !space) { this.commentRow = null; cx.notify(); return; }
+    const c = { id: `${Date.now()}`, path: b.path, rel: this.rel(b), line: row.b ?? row.a, side: row.kind === "-" ? "old" : "new", code: row.text.trim().slice(0, 120), text };
+    setShared(REVIEW, { ...(shared(REVIEW) ?? {}), [space]: [...this.comments(), c] });
+    this.commentRow = null; this.commentInput.set_value("");
+    cx.notify();
+  }
+
+  removeComment(id) {
+    const space = activeSpace()?.id;
+    if (space) setShared(REVIEW, { ...(shared(REVIEW) ?? {}), [space]: this.comments().filter((c) => c.id !== id) });
+  }
+
+  // Pastes every comment into the agent's prompt (nothing is submitted).
+  sendReview(agent, cx) {
+    const list = this.comments();
+    if (!list.length) return;
+    const text = "Please address these review comments:\n\n" + list.map((c) => `- ${c.rel}:${c.line}${c.side === "old" ? " (removed line)" : ""} \`${c.code}\`\n  ${c.text}`).join("\n") + "\n";
+    const before = cx.read_from_clipboard();
+    cx.write_to_clipboard(text);
+    run("tab.select", { id: agent.tab });
+    run("pane.focus", { terminal: agent.address });
+    cx.timer.after(250, (cx) => {
+      run("terminal.paste");
+      cx.timer.after(700, (cx) => { if (before !== undefined) cx.write_to_clipboard(before); });
+    });
+    const space = activeSpace()?.id;
+    if (space) setShared(REVIEW, { ...(shared(REVIEW) ?? {}), [space]: [] });
+    notify({ title: `Sent ${list.length} comment${list.length === 1 ? "" : "s"} to ${agent.program?.name ?? "the agent"}`, body: "They're in its prompt: press Enter there to send.", timeout: 4000 });
+  }
+
+  reviewBar(b, t) {
+    const list = this.comments(), space = activeSpace()?.id;
+    if (!list.length) return null;
+    const targets = agents().filter((a) => a.space === space);
+    return h_flex().flex_none().min_h(32).px(14).gap(6).items_center().border_b(1).border_color(t.border).bg(t.raised).text_size(12)
+      .child(svg("mods/ide-explorer/icons/sparkle.svg").size(13).text_color(t.accent))
+      .child(div().flex_1().child(`${list.length} review comment${list.length === 1 ? "" : "s"} in this space`))
+      .children(targets.slice(0, 4).map((a) => this.button(`rv-${a.address}`, `Send to ${a.program?.name ?? "agent"} · ${a.tab_name}`, true, (cx) => this.sendReview(a, cx), t)))
+      .when(!targets.length, (e) => e.child(div().text_color(t.dim).child("Start an agent in this space to send them")))
+      .child(this.button("rv-clear", "Clear", false, () => { if (space) setShared(REVIEW, { ...(shared(REVIEW) ?? {}), [space]: [] }); }, t));
   }
 
   revert(b, cx) {
@@ -799,7 +886,23 @@ export default class IdeEditor extends View {
       if (b.rows.length <= 2500) {
         const mode = !b.patchable ? null : b.ref ? "revert" : b.side === "staged" ? "unstage" : "stage";
         return div().id(`ed-diff-${b.view}`).flex_1().min_h(0).overflow_scroll().font_family(settings().font_family ?? "JetBrains Mono").text_size(12.5)
-          .child(v_flex().min_w(b.diffWidth).children(b.rows.map((r, i) => r.kind === "@" && mode ? this.hunkHeader(b, r, mode, t) : this.diffRow(r, t))));
+          .child(v_flex().min_w(b.diffWidth).children(b.rows.flatMap((r, i) => {
+            if (r.kind === "@") return [mode ? this.hunkHeader(b, r, mode, t) : this.diffRow(r, t)];
+            if (r.kind !== "+" && r.kind !== "-" && r.kind !== " ") return [this.diffRow(r, t)];
+            const line = r.b ?? r.a, side = r.kind === "-" ? "old" : "new";
+            const mine = this.comments().filter((c) => c.path === b.path && c.line === line && c.side === side);
+            const out = [div().id(`dr-${i}`).w_full().cursor_pointer().hover((x) => x.opacity(0.85)).tooltip("Click to comment on this line for the agent")
+              .on_click((_e, cx) => { this.commentRow = i; this.commentInput.set_value(""); this.commentInput.focus(); cx.notify(); }).child(this.diffRow(r, t))];
+            for (const c of mine) out.push(h_flex().w_full().flex_none().pl(108).pr(12).py(4).gap(8).items_center().bg(t.accent + "1a").border_l(2).border_color(t.accent).font_family(settings().ui_font ?? "Geist").text_size(12)
+              .child(div().flex_1().child(c.text))
+              .child(div().id(`rc-x-${c.id}`).px(4).rounded(3).cursor_pointer().text_color(t.dim).hover((x) => x.bg(t.hover)).on_click(() => this.removeComment(c.id)).child("×")));
+            if (this.commentRow === i) out.push(h_flex().w_full().flex_none().pl(108).pr(12).py(4).gap(6).items_center().bg(t.chrome).font_family(settings().ui_font ?? "Geist")
+              .on_key_down((e, cx) => { if (e.key === "escape") { this.commentRow = null; cx.stop_propagation(); cx.notify(); } })
+              .child(div().id(`rc-in-${i}`).flex_1().h(26).px(8).flex().items_center().rounded(5).border_1().border_color(t.accent).bg(t.background)
+                .child(Input.new(this.commentInput).flex_1().h_full().text_size(12).text_color(t.foreground)))
+              .child(this.button(`rc-add-${i}`, "Add", true, (cx) => this.addComment(b, r, cx), t)));
+            return out;
+          })));
       }
       return div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(12.5)
         .child(div().id(`ed-diff-x-${b.view}`).size_full().overflow_x_scrollbar()
@@ -870,6 +973,7 @@ export default class IdeEditor extends View {
       .when(Boolean(b.saveError) && !b.changed, (e) => e.child(div().px(14).py(6).flex_none().text_size(12).bg(t.raised).text_color(t.ansi1).child(b.saveError)))
       .when(Boolean(this.find.open && b.code), (e) => e.child(this.findBar(t)))
       .when(Boolean(b.code && b.editable && (b.hadConflicts || b.code.value().includes("<<<<<<< "))), (e) => { const bar = this.conflictBar(b, t); return bar ? e.child(bar) : e; })
+      .when(b.kind === "diff" && this.comments().length > 0, (e) => { const bar = this.reviewBar(b, t); return bar ? e.child(bar) : e; })
       .when(Boolean(b.hunkError), (e) => e.child(div().px(14).py(6).flex_none().text_size(12).bg(t.raised).text_color(t.ansi1).child(b.hunkError)))
       .child(b.path ? this.body(b, t) : div().p(16).text_color(t.dim).child("No file"));
   }

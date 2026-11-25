@@ -68,6 +68,13 @@
               }
             },
             {
+              "id": "view-problems",
+              "type": "block",
+              "content": {
+                "mod": "ide-problems"
+              }
+            },
+            {
               "id": "view-spaces",
               "type": "block",
               "content": {

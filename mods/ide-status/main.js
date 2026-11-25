@@ -9,6 +9,7 @@ const VIEWS = [
   { child: "view-explorer", icon: "mods/workspace-chrome/files.svg", tip: "Project (⌘⇧E)" },
   { child: "view-git", icon: "mods/workspace-chrome/git-branch.svg", tip: "Git (⌘⇧G)" },
   { child: "view-search", icon: "mods/workspace-chrome/search.svg", tip: "Search (⌘⇧F)" },
+  { child: "view-problems", icon: "mods/ide-explorer/icons/problems.svg", tip: "Problems (⌘⇧M)" },
   { child: "view-spaces", icon: "mods/workspace-chrome/layers.svg", tip: "Spaces" },
   { child: "view-agents", icon: "mods/ide-explorer/icons/bot.svg", tip: "Agents" },
 ];
@@ -30,6 +31,7 @@ export default class Status extends View {
         const c = await nextCommand();
         if (c === "explorer") { showView("view-explorer", true); setShared("ide.explorer.focus", Date.now()); }
         else if (c === "git") showView("view-git", true);
+        else if (c === "problems") showView("view-problems", true);
         else if (c === "goto_line") openOverlay({ mod: "ide-quickopen", kind: "popup", width: 680, height: 560, props: { line: true } });
         else if (c === "search") { showView("view-search", true); setShared("ide.find.focus", Date.now()); }
         cx.notify();
@@ -73,7 +75,9 @@ export default class Status extends View {
     return h_flex().id("ide-status").size_full().min_w(0).px(6).gap(2).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.5)
       .children(VIEWS.map((v) => {
         const on = sidebar && !sidebar.hidden && sidebar.active === v.child;
-        const extra = v.child === "view-git" && scm?.count ? badge(scm.count, t.blocked) : v.child === "view-agents" && blocked ? badge(blocked, t.blocked) : null;
+        const probs = space ? shared("ide.problems")?.[space.id] : null;
+        const extra = v.child === "view-git" && scm?.count ? badge(scm.count, t.blocked) : v.child === "view-agents" && blocked ? badge(blocked, t.blocked)
+          : v.child === "view-problems" && (probs?.errors || probs?.warnings) ? badge(probs.errors || probs.warnings, probs.errors ? t.ansi1 : t.blocked) : null;
         return btn(`sv-${v.child}`, h_flex().gap(3).items_center().child(svg(v.icon).size(13)).when(Boolean(extra), (e) => e.child(extra)), v.tip, () => showView(v.child), on);
       }))
       .child(div().w(1).h(12).mx(4).bg(t.border))
