@@ -12,22 +12,23 @@ export default class EditorMenu extends View {
 
   items() {
     const p = props() ?? {};
-    const local = !p.on;
+    const local = !p.on, page = p.kind === "changes"; // a Git page (compare, commit, history), not a file
     const fileTabs = () => Object.entries(shared(FILETABS) ?? {}).filter(([, e]) => e.space === p.space);
     return [
       ["Close", () => p.dirty ? openOverlay({ mod: "ide-editor-menu", kind: "dialog", width: 400, props: { mode: "close", uid: p.uid, tab: p.tab, name: p.path.split("/").pop() } }) : closeTab(p.tab), "⌘W"],
       ["Close other files", () => { for (const [, e] of fileTabs()) if (e.tab !== p.tab) closeTab(e.tab); }],
       ["Close all files", () => { for (const [, e] of fileTabs()) closeTab(e.tab); }],
       "-",
-      p.kind === "diff" ? ["Open file", () => openInEditor({ path: p.path, on: p.on, rel: p.rel })] : ["Open changes", () => openInEditor({ kind: "diff", path: p.path, on: p.on, root: p.root ?? project()?.path, rel: p.rel })],
+      !page && ["File history", () => openInEditor({ kind: "changes", path: p.root ?? project()?.path ?? p.path, on: p.on, ref: `log:${p.path}` })],
+      page ? null : p.kind === "diff" ? ["Open file", () => openInEditor({ path: p.path, on: p.on, rel: p.rel })] : ["Open changes", () => openInEditor({ kind: "diff", path: p.path, on: p.on, root: p.root ?? project()?.path, rel: p.rel })],
       ["Split terminal below", () => { run("tab.select", { id: p.tab }); run("pane.split", { direction: "down" }); }],
       p.dirty && ["Save", () => editorCommand("save", p.uid), "⌘S"],
       p.dirty && ["Revert", () => editorCommand("revert", p.uid)],
       "-",
-      ["Copy path", (cx) => cx.write_to_clipboard(p.path)],
-      ["Copy relative path", (cx) => cx.write_to_clipboard(p.rel)],
-      ["Reveal in Explorer", () => { setShared(REVEAL, { path: p.path, at: Date.now() }); run("layout.select", { stack: "sidebar", child: "view-explorer" }); run("layout.show", { id: "sidebar" }); }],
-      local && ["Reveal in Finder", () => exec("open", ["-R", p.path])],
+      !page && ["Copy path", (cx) => cx.write_to_clipboard(p.path)],
+      !page && ["Copy relative path", (cx) => cx.write_to_clipboard(p.rel)],
+      !page && ["Reveal in Explorer", () => { setShared(REVEAL, { path: p.path, at: Date.now() }); run("layout.select", { stack: "sidebar", child: "view-explorer" }); run("layout.show", { id: "sidebar" }); }],
+      local && !page && ["Reveal in Finder", () => exec("open", ["-R", p.path])],
     ].filter(Boolean).filter((item, i, all) => item !== "-" || (i > 0 && all[i - 1] !== "-" && i < all.length - 1));
   }
 

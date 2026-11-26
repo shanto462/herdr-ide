@@ -1,7 +1,7 @@
 // The IDE's Git panel, for the project folder (or the worktree picked for it):
 // branch + worktree pickers, fetch/pull/push, commit, staged and unstaged changes,
-// the BRANCH DIFF against a base branch, and history with per-commit files.
-// Every diff opens as an editor tab.
+// and recent history. Comparing branches, whole commits and the full history open as
+// editor tabs (ide-changes), never inside this panel. Every diff opens as a tab.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, watchFolder, theme, shared, setShared, openOverlay, notify, checking, nextCommand } from "herdr";
@@ -25,7 +25,7 @@ function numstat(text) {
 
 export default class Git extends View {
   init(_props, cx) {
-    this.state = null; this.sections = { turns: true, staged: true, changes: true, branch: true, history: false };
+    this.state = null; this.sections = { turns: true, staged: true, changes: true, compare: true, history: false };
     this.commits = []; this.commitFiles = {}; this.expanded = new Set();
     this.message = "";
     this.input = InputState.new({ placeholder: "Commit message (⏎ to commit)" });
@@ -58,8 +58,6 @@ export default class Git extends View {
       this.refresh(cx);
       cx.notify();
     }
-    const base = this.state?.top ? shared(BASES)?.[this.state.top] : null;
-    if (this.state && base && base !== this.state.base) this.refresh(cx);
   }
 
   // Porcelain paths are relative to the repo top, so once it's known every command runs there.
@@ -121,25 +119,7 @@ export default class Git extends View {
           if (xy[1] !== " ") s.changes.push({ path, mark: letter(" " + xy[1]), ...(unstagedStat[path] ?? {}) });
         }
         s.staged = s.staged.slice(0, MAX); s.changes = s.changes.slice(0, MAX);
-        // Branch diff: everything this branch (plus uncommitted work) changed since the base.
-        s.base = shared(BASES)?.[s.top] ?? (await this.defaultBase(s.branch));
-        s.branchFiles = [];
-        if (s.base && s.hasHead) {
-          const mb = await this.git(["merge-base", s.base, "HEAD"]);
-          if (mb.code === 0) {
-            const at = mb.stdout.trim();
-            const [names, nums, counts] = await Promise.all([
-              this.git(["diff", "--name-status", "-z", "--no-renames", at]),
-              this.git(["diff", "--numstat", "-z", "--no-renames", at]),
-              this.git(["rev-list", "--left-right", "--count", `${s.base}...HEAD`]),
-            ]);
-            const stat = numstat(nums.stdout), parts = names.stdout.split("\0");
-            for (let i = 0; i + 1 < parts.length; i += 2) s.branchFiles.push({ path: parts[i + 1], mark: parts[i][0], ...(stat[parts[i + 1]] ?? {}) });
-            for (const f of s.changes) if (f.fresh) s.branchFiles.push({ path: f.path, mark: "U", ...f });
-            const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number);
-            s.baseAhead = ahead || 0; s.baseBehind = behind || 0;
-          } else s.baseError = `No common history with ${s.base}`;
-        }
+        s.base = shared(BASES)?.[s.top] ?? null; // the last branch compared against, if any
         if (this.key !== key) return;
         this.state = s; this.error = null;
         this.publish();
@@ -231,22 +211,6 @@ export default class Git extends View {
 
   openDiff(f, ref, cx, preview = true) {
     openInEditor({ kind: "diff", path: `${this.state.top}/${f.path}`, on: this.p.on, root: this.state.top, rel: f.path, ref, preview });
-  }
-
-  toggleCommit(c, cx) {
-    if (this.expanded.has(c.sha)) { this.expanded.delete(c.sha); cx.notify(); return; }
-    this.expanded.add(c.sha);
-    if (!this.commitFiles[c.sha]) cx.spawn(async (cx) => {
-      const [names, nums] = await Promise.all([
-        this.git(["show", "--format=", "--name-status", "-z", "--no-renames", c.sha]),
-        this.git(["show", "--format=", "--numstat", "-z", "--no-renames", c.sha]),
-      ]);
-      const stat = numstat(nums.stdout), parts = names.stdout.split("\0").filter((x, i, a) => x !== "" || i < a.length - 1), files = [];
-      for (let i = 0; i + 1 < parts.length; i += 2) if (parts[i]) files.push({ path: parts[i + 1], mark: parts[i][0], ...(stat[parts[i + 1]] ?? {}) });
-      this.commitFiles[c.sha] = files;
-      cx.notify();
-    });
-    cx.notify();
   }
 
   // ---------- agent turns (recorded by ide-tabs) ----------
@@ -386,37 +350,39 @@ export default class Git extends View {
       ].filter(Boolean)));
       if (!s.changes.length) rows.push(div().pl(26).py(4).text_size(11.5).text_color(t.dim).child("Working tree clean"));
     }
-    rows.push(this.section("branch", s.base ? `BRANCH DIFF vs ${s.base}` : "BRANCH DIFF", s.base ? s.branchFiles.length : null, t, [
-      this.icon("g-base", "mods/workspace-chrome/git-compare.svg", "Compare against another branch", () => openOverlay({ mod: "ide-branches", kind: "popup", width: 460, height: 520, props: { mode: "base" } }), t),
-    ]));
-    if (this.sections.branch) {
-      if (!s.base) rows.push(div().pl(26).py(4).text_size(11.5).text_color(t.dim).child("Pick a base branch to compare against"));
-      else if (s.baseError) rows.push(div().pl(26).py(4).text_size(11.5).text_color(t.ansi1).child(s.baseError));
-      else {
-        rows.push(h_flex().pl(26).pr(8).h(20).gap(8).items_center().text_size(11).text_color(t.dim)
-          .child(div().child(`${s.baseAhead ?? 0} commits ahead · ${s.baseBehind ?? 0} behind`))
-          .child(div().text_color(t.ansi2).child(`+${s.branchFiles.reduce((n, f) => n + (f.add ?? 0), 0)}`))
-          .child(div().text_color(t.ansi1).child(`−${s.branchFiles.reduce((n, f) => n + (f.del ?? 0), 0)}`)));
-        for (const f of s.branchFiles) rows.push(this.fileRow(f, `br-${f.path}`, t, (e, cx) => this.openDiff(f, `base:${s.base}`, cx, e.click_count < 2), [
-          this.icon(`br-open-${f.path}`, "mods/ide-explorer/icons/open-file.svg", "Open file", () => openInEditor({ path: `${s.top}/${f.path}`, on: p.on, rel: f.path }), t),
-        ]));
-      }
+    // Compare: nothing runs until asked; results open as an editor tab.
+    rows.push(this.section("compare", "COMPARE", null, t));
+    if (this.sections.compare) {
+      const action = (id, icon, label, hint, run) => h_flex().id(id).h(26).flex_none().pl(26).pr(8).gap(7).items_center().cursor_pointer().hover((x) => x.bg(t.hover))
+        .tooltip(hint).on_click((_e, cx) => run(cx))
+        .child(svg(icon).size(13).flex_none().text_color(t.accent))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).child(label));
+      rows.push(action("g-cmp-pick", "mods/ide-explorer/icons/compare.svg", "Compare with a branch…", "Your working tree (uncommitted included) against a branch you pick, in an editor tab",
+        () => openOverlay({ mod: "ide-branches", kind: "popup", width: 460, height: 520, props: { mode: "compare" } })));
+      rows.push(action("g-cmp-quick", "mods/workspace-chrome/git-compare.svg", s.base ? `Compare with ${s.base}` : "Compare with the default branch", "Open the comparison in an editor tab",
+        (cx) => cx.spawn(async () => {
+          const against = s.base ?? (await this.defaultBase(s.branch));
+          if (!against) { notify({ title: "No default branch found", body: "Pick one with Compare with a branch…", level: "warning" }); return; }
+          openInEditor({ kind: "changes", path: s.top, on: p.on, root: s.top, ref: `compare:${against}...` });
+        })));
+      rows.push(action("g-log", "mods/ide-explorer/icons/history.svg", "Open full history", "Every commit, filterable, in an editor tab",
+        () => openInEditor({ kind: "changes", path: s.top, on: p.on, root: s.top, ref: "log:" })));
     }
-    rows.push(this.section("history", "HISTORY", null, t));
+    rows.push(this.section("history", "HISTORY", null, t, [
+      this.icon("g-log-tab", "mods/ide-explorer/icons/history.svg", "Open full history in a tab", () => openInEditor({ kind: "changes", path: s.top, on: p.on, root: s.top, ref: "log:" }), t),
+    ]));
     if (this.sections.history) {
       for (const c of this.commits) {
-        const open = this.expanded.has(c.sha);
         rows.push(h_flex().id(`c-${c.sha}`).h(36).flex_none().pl(10).pr(8).gap(6).items_center().cursor_pointer().hover((x) => x.bg(t.hover))
-          .tooltip(`${c.short} · ${c.author} · ${c.when}${c.refs ? `\n${c.refs}` : ""}`)
-          .on_click((_e, cx) => this.toggleCommit(c, cx))
+          .tooltip(`${c.short} · ${c.author} · ${c.when}${c.refs ? `\n${c.refs}` : ""}\nClick: open the commit in a tab · right-click: copy hash`)
+          .on_click(() => openInEditor({ kind: "changes", path: s.top, on: p.on, root: s.top, ref: `commit:${c.sha}` }))
           .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(c.sha); notify({ title: "Copied commit hash", body: c.short, timeout: 1500 }); })
-          .child(svg(`mods/files/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none().text_color(t.dim))
+          .child(svg("mods/ide-explorer/icons/commit.svg").size(12).flex_none().text_color(t.dim))
           .child(v_flex().flex_1().min_w(0)
             .child(h_flex().gap(6).min_w(0)
               .child(div().flex_1().min_w(0).truncate().text_size(12).child(c.subject))
               .when(Boolean(c.refs), (e) => e.child(div().flex_none().max_w(110).truncate().px(4).rounded(3).bg(t.accent + "26").text_size(10).text_color(t.accent).child(c.refs.replace(/HEAD -> /, "")))))
             .child(div().truncate().text_size(10.5).text_color(t.dim).child(`${c.short} · ${c.author} · ${c.when}`))));
-        if (open) for (const f of this.commitFiles[c.sha] ?? []) rows.push(this.fileRow(f, `cf-${c.sha}-${f.path}`, t, (e, cx) => this.openDiff(f, `commit:${c.sha}`, cx, e.click_count < 2), [], 1));
       }
       if (!this.commits.length) rows.push(div().pl(26).py(4).text_size(11.5).text_color(t.dim).child(this.historyLoaded ? (s.hasHead ? "No history" : "No commits yet") : "Loading…"));
     }

@@ -14,13 +14,12 @@ export default class Spaces extends View {
     this.query = "";
     this.scroll = ScrollHandle.new();
     this.input = InputState.new({ placeholder: "Switch to space…" });
-    this.input.on("change", (_e, cx) => { this.query = this.input.value().toLowerCase(); this.at = 0; cx.notify(); });
+    this.input.on("change", (_e, cx) => { this.query = this.input.value().toLowerCase(); this.at = this.query ? 0 : Math.max(0, spaces().findIndex((s) => s.active)); cx.notify(); });
     this.input.on("submit", () => this.pick(this.list()[this.at ?? 0]));
     this.input.focus();
     cx.timer.after(150, () => this.input.focus());
-    // Start on the space after the current one, so Enter flips between two spaces.
-    const all = spaces(), cur = all.findIndex((s) => s.active);
-    this.at = all.length > 1 ? (cur + 1) % all.length : 0;
+    // The keyboard cursor starts on the current space.
+    this.at = Math.max(0, spaces().findIndex((s) => s.active));
   }
 
   dismiss() { const o = props()?.overlay; if (o) closeOverlay(o); else run("mod.open", { name: "ide-spaces" }); }
@@ -66,8 +65,10 @@ export default class Spaces extends View {
       .child(v_flex().id("sp-list").h(340).flex_none().overflow_y_scrollbar().track_scroll(this.scroll)
         .children(items.map((s, i) => {
           const tabs = s.tabs.filter((x) => !x.settled).length;
-          return h_flex().id(`sp-${s.id}`).h(46).flex_none().px(10).gap(10).items_center().rounded(7).cursor_pointer()
-            .when(i === at, (e) => e.bg(t.selected)).hover((x) => x.bg(t.hover))
+          // Keyboard cursor: selected fill. Current space: accent bar on the left.
+          return h_flex().id(`sp-${s.id}`).h(46).flex_none().pl(7).pr(10).gap(10).items_center().rounded(7).cursor_pointer()
+            .border_l_3().border_color(s.active ? t.accent : "#00000000")
+            .when(i === at, (e) => e.bg(t.selected)).when(i !== at, (e) => e.hover((x) => x.bg(t.hover)))
             .on_click(() => this.pick(s))
             .child(div().size(24).flex_none().flex().items_center().justify_center().rounded(6).bg(t[tintOf(s)])
               .text_size(12).font_semibold().text_color(t.background).child((s.name[0] ?? "?").toUpperCase()))

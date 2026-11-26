@@ -69,6 +69,7 @@ export default class FileOps extends View {
     return [
       target && !p.dir && ["Open", () => { openInEditor({ path: abs, on: p.on ?? null, rel: p.rel }); this.close(); }],
       target && !p.dir && ["Open changes", () => { openInEditor({ kind: "diff", path: abs, on: p.on ?? null, root: p.root, rel: p.rel }); this.close(); }],
+      target && !p.dir && ["File history", () => { openInEditor({ kind: "changes", path: p.root, on: p.on ?? null, root: p.root, ref: `log:${abs}` }); this.close(); }],
       target && p.dir && ["Set as project root", () => { setRoot(p.space, abs, p.on ?? null); this.close(); }],
       ...this.accounts().map(([name, tab, terminal]) => [`Send to ${name}`, () => { this.after({ send: { tab, terminal, text: this.mention(terminal) } }); this.close(); }]),
       "-",

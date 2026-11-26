@@ -15,12 +15,14 @@ A Zed-style IDE layout for [Herdr](https://herdr.dev): one tab strip for termina
 - **Git panel:**
   - Stage, unstage, discard, commit and amend.
   - Fetch, pull and push.
-  - **Branch diff vs a base branch.**
-  - History with per-commit files.
-  - Every diff opens as a tab.
+  - Every diff opens as a tab; the panel never computes comparisons on its own.
+- **Git pages in editor tabs:**
+  - **Compare:** your working tree (uncommitted and untracked included) or any branch against a base branch. Pick both sides in the tab, swap them, and see the commits plus every file's diff on one page.
+  - **Commit:** click a commit anywhere to open its message, author, parents and full diff.
+  - **History:** the whole log, filterable, or one file's history (right-click a file → File history).
   - **Hunk staging:** stage, unstage or discard single hunks, with an Unstaged/Staged switch on each file's diff.
   - Revert single hunks in branch and agent-turn diffs.
-- **Branch picker** to switch, create, or compare against a branch.
+- **Branch picker** to switch, create, or open a comparison with a branch.
 - **Worktree picker** to switch, create or remove worktrees. It re-roots the IDE, not your space.
 - **Space switcher:** the project button in the title bar opens a searchable list of spaces; the sidebar stays on whatever view you had open.
 - **Agent-turn review.** When an agent finishes working, the Git panel lists the files that turn changed. You can open each change as a diff, or revert one file or the whole turn.

@@ -1,14 +1,16 @@
-// Branch picker. Props: { mode: "switch" | "base", overlay }.
+// Branch picker. Props: { mode: "switch" | "compare" | "pick", uid?, side?, overlay }.
 // switch: check out a branch (local or remote), or create one from what you typed.
 //   A branch already checked out in another worktree offers to switch the IDE to
 //   that worktree instead (same space, no space switch).
-// base:  pick what the Git panel's BRANCH DIFF compares against.
+// compare: pick a base branch, then open a Compare tab (your working tree vs that branch).
+// pick:    set the base or head (side) of the open Compare tab `uid`.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { props, closeOverlay, theme, exec, shared, setShared, notify, checking } from "herdr";
-import { project, activeSpace, setRoot } from "./common.js";
+import { project, activeSpace, setRoot, openInEditor } from "./common.js";
 
 const BASES = "ide.git.base";
+const PICK = "ide.compare.pick"; // { uid, side, branch, at } → the Compare tab uid
 const READ = ["--no-optional-locks"];
 
 export default class Branches extends View {
@@ -16,7 +18,7 @@ export default class Branches extends View {
     this.branches = []; this.query = ""; this.at = 0; this.status = "Loading branches…";
     this.handle = cx.focus_handle();
     this.scroll = ScrollHandle.new();
-    this.input = InputState.new({ placeholder: props()?.mode === "base" ? "Compare against branch…" : "Switch to branch, or type a new name…" });
+    this.input = InputState.new({ placeholder: props()?.mode === "pick" && props()?.side === "head" ? "Show changes of branch…" : props()?.mode !== "switch" && props()?.mode ? "Compare against branch…" : "Switch to branch, or type a new name…" });
     this.input.on("change", (_e, cx) => { this.query = this.input.value().trim(); this.at = 0; cx.notify(); });
     this.input.on("submit", (_e, cx) => this.choose(this.items()[this.at], cx));
     this.input.focus();
@@ -61,7 +63,9 @@ export default class Branches extends View {
     const q = this.query.toLowerCase();
     const list = this.branches.filter((b) => !q || b.name.toLowerCase().includes(q));
     const out = list.map((b) => ({ type: "branch", b }));
-    if (props()?.mode !== "base" && this.query && !this.branches.some((b) => b.name === this.query)) out.unshift({ type: "create", name: this.query });
+    const p = props() ?? {};
+    if (p.mode === "pick" && p.side === "head" && (!q || "working tree".includes(q))) out.unshift({ type: "worktree" });
+    if ((p.mode ?? "switch") === "switch" && this.query && !this.branches.some((b) => b.name === this.query)) out.unshift({ type: "create", name: this.query });
     return out;
   }
 
@@ -70,11 +74,12 @@ export default class Branches extends View {
   choose(item, cx) {
     if (!item || this.busy) return;
     const mode = props()?.mode;
-    if (mode === "base") {
-      setShared(BASES, { ...(shared(BASES) ?? {}), [this.top]: item.b.name });
+    if (mode === "pick") {
+      setShared(PICK, { uid: props().uid, side: props().side, branch: item.type === "worktree" ? "" : item.b.name, at: `${Date.now()}` });
       this.dismiss();
       return;
     }
+    if (mode === "compare" || mode === "base") { this.compare(item.b); return; }
     if (item.type === "branch" && item.b.current) { this.dismiss(); return; }
     if (item.type === "branch" && item.b.worktree && item.b.worktree !== this.top) {
       setRoot(activeSpace().id, item.b.worktree, project().on);
@@ -93,14 +98,15 @@ export default class Branches extends View {
     });
   }
 
+  // Opens a Compare tab: your working tree (uncommitted included) against branch b.
   compare(b) {
     setShared(BASES, { ...(shared(BASES) ?? {}), [this.top]: b.name });
-    notify({ title: `Branch diff now compares against ${b.name}`, timeout: 2000 });
+    openInEditor({ kind: "changes", path: this.top, on: project().on, root: this.top, ref: `compare:${b.name}...` });
     this.dismiss();
   }
 
   render() {
-    const t = theme(), items = this.items(), base = props()?.mode === "base";
+    const t = theme(), items = this.items(), mode = props()?.mode ?? "switch", base = mode !== "switch";
     const currentBase = this.top ? shared(BASES)?.[this.top] : null;
     return v_flex().id("ide-branches").track_focus(this.handle).size_full().min_h(0).p(8).gap(6).bg(t.popover).text_color(t.foreground).text_size(12.8)
       .on_key_down((e, cx) => {
@@ -118,6 +124,10 @@ export default class Branches extends View {
       .when(Boolean(this.error), (e) => e.child(div().px(8).py(4).text_size(11.5).text_color(t.ansi1).child(this.error)))
       .child(v_flex().id("br-list").h(400).flex_none().overflow_y_scrollbar().track_scroll(this.scroll)
         .children(items.slice(0, 300).map((it, i) => {
+          if (it.type === "worktree") return h_flex().id("br-worktree").h(40).flex_none().px(10).gap(8).items_center().rounded(6).cursor_pointer()
+            .when(i === this.at, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.choose(it, cx))
+            .child(div().w(10).flex_none())
+            .child(v_flex().flex_1().min_w(0).child(div().child("Working tree")).child(div().text_size(10.5).text_color(t.dim).child("The current branch plus uncommitted and untracked files")));
           if (it.type === "create") return h_flex().id("br-create").h(32).flex_none().px(10).gap(8).items_center().rounded(6).cursor_pointer()
             .when(i === this.at, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.choose(it, cx))
             .child(svg("mods/workspace-chrome/plus.svg").size(13).text_color(t.accent)).child(div().child(`Create branch "${it.name}" from here`));
@@ -136,6 +146,6 @@ export default class Branches extends View {
               .on_click((_e, cx) => { cx.stop_propagation(); this.compare(b); }).child("compare")));
         }))
         .when(!items.length, (e) => e.child(div().p(10).text_color(t.dim).child(this.status ?? "No branches match"))))
-      .child(div().flex_none().px(6).text_size(10.5).text_color(t.dim).child(this.busy ? "Working…" : base ? "↵ compare against" : "↵ switch · branches in another worktree open that worktree"));
+      .child(div().flex_none().px(6).text_size(10.5).text_color(t.dim).child(this.busy ? "Working…" : mode === "pick" ? "↵ use this branch" : base ? "↵ compare your working tree against it (opens a tab)" : "↵ switch · branches in another worktree open that worktree"));
   }
 }

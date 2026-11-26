@@ -229,7 +229,7 @@ export default class Explorer extends View {
   }
 
   menu(rel, dir) {
-    openOverlay({ mod: "ide-fileops", kind: "popup", width: 240, height: rel ? (dir ? 470 : 530) : 330, props: { mode: "menu", root: this.root, on: this.on, rel, dir, space: activeSpace()?.id } });
+    openOverlay({ mod: "ide-fileops", kind: "popup", width: 240, height: rel ? (dir ? 470 : 558) : 330, props: { mode: "menu", root: this.root, on: this.on, rel, dir, space: activeSpace()?.id } });
   }
 
   dialog(action) {

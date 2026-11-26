@@ -87,7 +87,6 @@ export default class Status extends View {
         .child(svg("mods/workspace-chrome/git-branch.svg").size(12)).child(div().max_w(220).truncate().child(scm.branch))
         .when(Boolean(scm.ahead), (x) => x.child(div().child(`↑${scm.ahead}`))).when(Boolean(scm.behind), (x) => x.child(div().child(`↓${scm.behind}`))),
         "Switch branch", () => openOverlay({ mod: "ide-branches", kind: "popup", width: 460, height: 520, props: { mode: "switch" } }))))
-      .when(Boolean(scm?.base), (e) => e.child(div().text_color(t.dim).text_size(11).child(`vs ${scm.base}`)))
       .when(Boolean(p?.on), (e) => e.child(div().px(5).text_color(t.accent).child(`⇄ ${p.on}`)))
       .child(div().flex_1())
       .when(Boolean(active), (e) => e

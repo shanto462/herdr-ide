@@ -27,6 +27,15 @@ function resetsIn(at) {
   return days ? `${days}d ${hours}h` : hours ? `${hours}h ${rest}m` : `${rest}m`;
 }
 
+// Git pages (ide-changes): compare:<base>...<head>, commit:<sha>, log:[path].
+function pageLabel(ref) {
+  if (ref.startsWith("compare:")) { const r = ref.slice(8), i = r.indexOf("..."); return `${(i < 0 ? "" : r.slice(i + 3)) || "working tree"} ↔ ${i < 0 ? r : r.slice(0, i)}`; }
+  if (ref.startsWith("commit:")) return `@${ref.slice(7, 14)}`;
+  const path = ref.slice(4);
+  return path ? `History: ${path.split("/").pop()}` : "History";
+}
+const pageIcon = (ref) => `mods/ide-explorer/icons/${ref.startsWith("compare:") ? "compare" : ref.startsWith("commit:") ? "commit" : "history"}.svg`;
+
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
@@ -258,7 +267,7 @@ export default class Tabs extends View {
     this.lastOpen = req.at;
     const space = all.find((x) => x.id === req.space) ?? activeSpace();
     if (!space || !req.path) return;
-    const kind = req.kind ?? "file", ref = kind === "diff" ? req.ref ?? "" : "", on = req.on ?? null;
+    const kind = req.kind ?? "file", ref = kind === "diff" || kind === "changes" ? req.ref ?? "" : "", on = req.on ?? null;
     const hit = Object.entries(reg).find(([, e]) => e.space === space.id && space.tabs.some((t) => t.id === e.tab) && e.kind === kind && e.path === req.path && (e.ref ?? "") === ref && (e.on ?? null) === on);
     if (!space.active) run("space.select", { id: space.id });
     if (hit) {
@@ -271,12 +280,12 @@ export default class Tabs extends View {
     const prev = req.preview ? Object.entries(reg).find(([u, e]) => e.space === space.id && e.preview && !dirty[u] && space.tabs.some((t) => t.id === e.tab)) : null;
     const uid = `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const name = req.path.split("/").pop();
-    const label = kind !== "diff" ? name : ref.startsWith("commit:") ? `${name} @${ref.slice(7, 14)}` : ref.startsWith("base:") ? `${name} ↔ ${ref.slice(5)}` : ref.startsWith("turn:") ? `${name} (agent turn)` : `${name} (diff)`;
+    const label = kind === "changes" ? pageLabel(ref) : kind !== "diff" ? name : ref.startsWith("commit:") ? `${name} @${ref.slice(7, 14)}` : ref.startsWith("base:") ? `${name} ↔ ${ref.slice(5)}` : ref.startsWith("turn:") ? `${name} (agent turn)` : `${name} (diff)`;
     const entry = { space: space.id, kind, path: req.path, on, rel: req.rel ?? null, root: req.root ?? null, ref, preview: Boolean(req.preview) };
     this.opening = true;
     cx.spawn(async (cx) => {
       try {
-        const made = await this.doIt("tab.new", { name: label, space: space.id, mod: "ide-editor", props: { uid, ...entry, line: req.line ?? null, column: req.column ?? null } });
+        const made = await this.doIt("tab.new", { name: label, space: space.id, mod: kind === "changes" ? "ide-changes" : "ide-editor", props: { uid, ...entry, line: req.line ?? null, column: req.column ?? null } });
         setShared(FILETABS, { ...(shared(FILETABS) ?? {}), [uid]: { ...entry, tab: made.tab } });
         // Files always go after every other tab, so cmd-1..4 keep meaning the accounts.
         const tabsNow = spaces().find((x) => x.id === space.id)?.tabs ?? [];
@@ -356,8 +365,9 @@ export default class Tabs extends View {
           else run("tab.select", { id: c.id });
         })
         .on_mouse_down("middle", () => this.closeFile(c, uid, e, isDirty))
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "ide-editor-menu", kind: "popup", width: 240, height: isDirty ? 412 : 356, props: { uid, tab: c.id, space: space.id, path: e.path, on: e.on, kind: e.kind, rel: e.rel ?? relTo(project()?.path, e.path), root: e.root, dirty: isDirty } }); })
-        .child(e.kind === "diff" ? svg("mods/workspace-chrome/git-compare.svg").size(12).flex_none().text_color(t.blocked) : div().size(8).flex_none().rounded(2).bg(fileTint(name, t)))
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "ide-editor-menu", kind: "popup", width: 240, height: e.kind === "changes" ? 170 : isDirty ? 440 : 384, props: { uid, tab: c.id, space: space.id, path: e.path, on: e.on, kind: e.kind, rel: e.rel ?? relTo(project()?.path, e.path), root: e.root, dirty: isDirty } }); })
+        .child(e.kind === "changes" ? svg(pageIcon(e.ref)).size(12).flex_none().text_color(t.accent)
+          : e.kind === "diff" ? svg("mods/workspace-chrome/git-compare.svg").size(12).flex_none().text_color(t.blocked) : div().size(8).flex_none().rounded(2).bg(fileTint(name, t)))
         .child(div().max_w(200).truncate().when(Boolean(e.preview), el => el.italic()).child(c.name))
         .child(div().id(`close-${c.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).hover(s => s.bg(t.raised))
           .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.closeFile(c, uid, e, isDirty); })
